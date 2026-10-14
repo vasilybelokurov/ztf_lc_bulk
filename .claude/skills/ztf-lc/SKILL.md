@@ -49,6 +49,7 @@ most clean epochs, then longest baseline, then smallest separation.
   file (~0.74 deg²) must be downloaded whole. IRSA serves ~0.7–1.1 MB/s, so estimate
   time before starting large runs and tell the user.
 - Arrays in the raw IRSA files are not time-sorted; this package sorts them.
-- Do not use `sqlutilpy.get(..., driver='duckdb')` on list columns: it scrambles them.
+- `sqlutilpy.get(..., driver='duckdb')` scrambles list columns in sqlutilpy ≤ 0.27
+  (fixed in 0.28.0). If you query the parquet files that way, check the version first.
 - The API's ztf_dr23 collection has ~0.2% more epochs (Nov 2023–Mar 2024) than the
   parquet release. This is expected; it is not a bug in the extraction.

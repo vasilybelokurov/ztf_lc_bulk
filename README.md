@@ -186,8 +186,11 @@ objects in them were needed.
   the IRSA HATS release on S3, best run from AWS us-east-1.
 - **Remote partial reads do not help.** Each file is a single parquet row group, so
   DuckDB httpfs cannot skip rows.
-- **`sqlutilpy.get(..., driver='duckdb')` scrambles list columns** (sqlutilpy 0.26/0.27;
-  reported to Sergey). It is not used here.
+- **`sqlutilpy.get(..., driver='duckdb')` scrambles list columns in sqlutilpy ≤ 0.27.**
+  This is fixed in 0.28.0, which we verified on two DR23 files: 1–62 epochs, single
+  and multi-row queries, ragged lengths. This package reads parquet with pyarrow and
+  does not use the duckdb driver. If you query the files yourself with it, use
+  sqlutilpy ≥ 0.28.
 - **objectids are per band and field.** Several per source are normal, with
   complementary epochs and zero-point offsets between fields (median ~0.06 mag). Use
   `primary=True` or model the offsets; do not concatenate them blindly.
