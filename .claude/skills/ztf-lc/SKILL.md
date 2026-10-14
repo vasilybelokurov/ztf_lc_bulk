@@ -1,0 +1,54 @@
+---
+name: ztf-lc
+description: Get ZTF DR23 light curves for a target list (thousands to millions of sources) with the ztf_lc_bulk package, which crossmatches in WSDB against koposov.ztf_23_objs and extracts from the IRSA parquet release. Use whenever a task needs ZTF light curves, ZTF photometry time series, ZTF objectids for a catalogue, or asks to "download ZTF", "get ZTF lightcurves", "ZTF variability" for more than a handful of objects. Use it instead of writing a new IRSA nph_light_curves API downloader.
+---
+
+# ztf-lc: ZTF light curves via ztf_lc_bulk
+
+Package: `~/Work/Code/ztf_lc_bulk`, installed editable in `~/Work/venvs/.venv`.
+Read its `README.md` for the full output schema and test descriptions.
+
+## Decide the route first
+- **More than ~100 targets, or a dense field**: use this package (bulk parquet).
+- **A handful of objects, or you need sharp/chi/limitmag/airmass/DR24**: use the IRSA
+  API (`nph_light_curves`, pin `COLLECTION`, at most 4–8 concurrent requests;
+  ≥16 gives ~100% failures).
+- **Galaxies whose nucleus varies**: catalogue PSF light curves are unreliable. You need
+  ZFPS forced photometry, which is slow (weeks).
+
+## Workflow
+```bash
+source ~/Work/venvs/.venv/bin/activate
+# 1. match: a WSDB table, or a local file (.parquet/.csv/.fits) uploaded as a temp table
+ztf-lc-bulk match --table schema.table --id id --ra ra --dec dec --radius 1.0 --out runs/NAME
+ztf-lc-bulk match --input targets.csv --id name --ra ra --dec dec --out runs/NAME
+# 2. Check the match summary before extracting: download = n_files whole files
+#    (DR23 file size: median 10 MB, mean 43 MB; r band in the primary grid is the largest)
+# 3. extract (resumable; rerun to retry failures), then verify
+ztf-lc-bulk extract --out runs/NAME --workers 4
+ztf-lc-bulk verify  --out runs/NAME
+ztf-lc-bulk validate-api --out runs/NAME --n 20     # optional: compare with IRSA API
+```
+```python
+import ztf_lc_bulk as z
+df = z.load("runs/NAME", primary=True)            # one row per (src_id, band); array columns
+lc = z.load("runs/NAME", src_ids=[...], long=True) # one row per epoch
+```
+`load` defaults: catflags==0 only, min_epochs=1. Primary objectid per (src_id, band) =
+most clean epochs, then longest baseline, then smallest separation.
+
+## Facts to respect
+- Release is **DR23** (the WSDB index exists only for DR23).
+- `hmjd` is heliocentric MJD, rounded to 1e-5 d (0.86 s).
+- objectids are per band and per field/CCD/quadrant. A source typically has about 2 per
+  band, with complementary epochs and field-to-field zero-point offsets of ~0.06 mag
+  (median). Do not merge them silently; use `primary=True` or model the offsets.
+- The parquet has only hmjd/mag/magerr/clrcoeff/catflags. sharp, chi, limitmag and
+  airmass come only from the API.
+- **Download size is set by sky area, not source count**: each field × band × quadrant
+  file (~0.74 deg²) must be downloaded whole. IRSA serves ~0.7–1.1 MB/s, so estimate
+  time before starting large runs and tell the user.
+- Arrays in the raw IRSA files are not time-sorted; this package sorts them.
+- Do not use `sqlutilpy.get(..., driver='duckdb')` on list columns: it scrambles them.
+- The API's ztf_dr23 collection has ~0.2% more epochs (Nov 2023–Mar 2024) than the
+  parquet release. This is expected; it is not a bug in the extraction.

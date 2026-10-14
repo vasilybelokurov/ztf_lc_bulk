@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ztf_lc_bulk"
+version = "0.1.0"
+description = "Bulk extraction of ZTF DR23 light curves from the IRSA parquet release via the WSDB index"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{ name = "Vasily Belokurov", email = "vasily@ast.cam.ac.uk" }]
+dependencies = [
+    "numpy>=1.24",
+    "pandas>=2.0",
+    "pyarrow>=14",
+    "requests>=2.28",
+    "sqlutilpy>=0.26",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+fits = ["astropy>=6"]
+
+[project.scripts]
+ztf-lc-bulk = "ztf_lc_bulk.__main__:main"
+
+[tool.setuptools]
+packages = ["ztf_lc_bulk"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-m 'not network'"
+markers = ["network: needs WSDB access and/or the IRSA web services (run with -m network)"]
