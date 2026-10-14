@@ -39,8 +39,11 @@ most clean epochs, then longest baseline, then smallest separation.
 
 ## Facts to respect
 - Releases: **DR23** (default) or **DR24** (`--release dr24`). Objects are always located
-  through the DR23 index, so DR24 output lacks objects that are new in DR24 (1–8% per file
-  in COSMOS). For those, or for sharp/chi/limitmag/airmass, use the API with COLLECTION=ztf_dr24.
+  through the DR23 index. DR23 objects get complete, correct DR24 light curves (a broken
+  index would make `verify` fail). Objects NEW in DR24 are silently absent: 0.9–7.1% of
+  objects per COSMOS file, all with ≤ 5 epochs and median mag 20.5–21.3. Fine for
+  variability of known objects; for completeness-sensitive work tell the user, and see the
+  README section "Can the DR23 index be relied on for DR24?".
 - `hmjd` is heliocentric MJD, rounded to 1e-5 d (0.86 s).
 - objectids are per band and per field/CCD/quadrant. A source typically has about 2 per
   band, with complementary epochs and field-to-field zero-point offsets of ~0.06 mag

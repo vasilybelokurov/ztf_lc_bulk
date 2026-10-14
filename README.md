@@ -11,8 +11,9 @@ It then downloads only the files that are needed, from DR23 or DR24
   light-curve API instead.
 - **DR24 limitation:** objects are located through the DR23 index, so DR24 output
   holds the full DR24 light curves of objects that already existed in DR23. Objects
-  new in DR24 (1–8% per file in COSMOS) are not included. See
-  [DR24](#dr24-cosmos2020-classic-2026-10-14).
+  new in DR24 are silently absent. In COSMOS they are 0.9–7.1% of the objects per
+  file; all have ≤ 5 epochs and they are faint. See
+  [Can the DR23 index be relied on for DR24?](#can-the-dr23-index-be-relied-on-for-dr24).
 
 ## Install
 
@@ -257,11 +258,73 @@ After `load(primary=True)` (catflags == 0):
 | r | 79,061 → 79,111 | 11 → 12 | 582 → 611 | 19,348 → 19,688 | 1,752 → 1,889 |
 | i | 39,436 → 39,531 | 10 → 13 | 55 → 72 | 0 → 0 | 827 → 1,207 |
 
-**Not included:** objects new in DR24. On three COSMOS files DR24 added 140–1,033
-objects per file (0.9–7.6%), none of which can be reached through the DR23 index.
-All DR23 objectids were present in DR24 with identical positions, which is what
-makes the index reusable. This was checked on the 36 COSMOS files, not across the
-whole sky.
+### Can the DR23 index be relied on for DR24?
+
+**Short answer:** yes, for every object that already existed in DR23: you get its
+complete, correct DR24 light curve. No, for objects that are new in DR24: they are
+silently absent. In the files tested, the new objects are faint and almost all have
+a single epoch.
+
+**How DR24 is reached.** WSDB indexes DR23 only. `--release dr24` takes each matched
+DR23 objectid and its DR23 file path and reads the file of the same field, band, CCD
+and quadrant from `lc_dr24/` instead (`release_filename()`). This is valid only if
+DR24 keeps the DR23 objectids in the same files.
+
+**What was tested, and how.**
+
+1. *Whole-file comparison of three COSMOS quadrants*
+   (`scripts/compare_release_files.py`). Both releases of each file were downloaded,
+   and **all** objects in the quadrant were compared, not just matched ones. An
+   object is "new" if its objectid appears in the DR24 file but not in the DR23
+   file; each file lists every object of its quadrant, so this is a complete count.
+
+   | File | DR23 objects | DR24 objects | Only in DR23 | Only in DR24 (new) | Position shift | DR23 epochs all in DR24 | mag identical |
+   |---|---|---|---|---|---|---|---|
+   | `ztf_000468_zi_c03_q1` | 12,214 | 12,946 | 0 | 732 (5.7% of DR24) | 0″ | 12,214 / 12,214 | 12,214 / 12,214 |
+   | `ztf_001462_zr_c10_q2` | 15,279 | 15,419 | 0 | 140 (0.9%) | 0″ | 15,279 / 15,279 | 15,279 / 15,279 |
+   | `ztf_000468_zg_c08_q4` | 13,611 | 14,644 | 0 | 1,033 (7.1%) | 0″ | 13,611 / 13,611 | 13,611 / 13,611 |
+
+   The new objects are short and faint:
+
+   | File | New objects | With 1 epoch | With ≤ 5 epochs | With ≥ 10 epochs | Median mag |
+   |---|---|---|---|---|---|
+   | `ztf_000468_zg_c08_q4` | 1,033 | 90% | 100% | 0 | 21.27 |
+   | `ztf_000468_zi_c03_q1` | 732 | 92% | 100% | 0 | 20.49 |
+   | `ztf_001462_zr_c10_q2` | 140 | 99% | 100% | 0 | 20.46 |
+
+   For comparison, the median over all objects in these DR24 files is 3–9 epochs.
+
+2. *Full COSMOS run* (36 files, 185,079 matched objectids): every DR23 objectid was
+   found in its DR24 file (`n_missing = 0`), every DR23 epoch is in DR24 with identical
+   time and mag (`scripts/compare_releases.py`), and 40 of 40 objects agree exactly
+   with the IRSA `ztf_dr24` API, which had no extra epochs.
+
+**What can be relied on:**
+- **Objects present in DR23 get their full DR24 light curves.** Shown in 1 and 2.
+- **A breakdown of the index would be loud, not silent.** If a DR23 objectid were ever
+  missing from its DR24 file (renumbered, moved or dropped), `extract` would count it
+  in `missing` / `n_missing` (also in `manifest.jsonl`) and `verify` would fail. On
+  COSMOS this count was 0 in all 36 files.
+
+**What cannot be relied on:**
+- **Objects new in DR24 are silently missing.** A target whose only ZTF counterpart
+  first appears in DR24 gets no light curve and no warning.
+- **The fraction of targets affected is not measured.** The 0.9–7.1% above counts new
+  objects in whole quadrants (~0.74 deg² each), not within 1″ of targets. Given that
+  the new objects have ≤ 5 epochs and median mag 20.5–21.3, the loss for light-curve
+  work is expected to be small. That is an inference from three files, not a
+  measurement.
+- **Only COSMOS was tested:** 3 files compared in full, plus 36 files for the matched
+  objects. Other fields, especially crowded ones, have not been checked.
+
+**Recommendation.**
+- Light curves of known, reasonably bright objects (variability studies): use DR24
+  through the DR23 index.
+- Completeness-sensitive work, such as a census down to the ZTF limit, or targets
+  near the limit: the new DR24 objects matter. Either use DR23 consistently, or
+  measure the loss first. Re-run with `--keep-raw`, match the targets against
+  all objects in the downloaded DR24 files, and count targets that gain a new
+  counterpart. That measurement has not been done yet.
 
 ## Known issues and caveats
 - **The API's `ztf_dr23` collection has 0.2% more epochs than the DR23 parquet
@@ -272,7 +335,9 @@ whole sky.
   file must be fetched to read any object in it. All of DR23 is 177,218 files and
   7.97 TB. All NSA v1_0_1 galaxies (641,409) would need 83,894 files, 1.48 TB:
   about 17 days at 1 MB/s.
-- **DR24 relies on the DR23 index** and so misses objects new in DR24 (see above).
+- **DR24 relies on the DR23 index** and so silently misses objects new in DR24. If
+  the index ever broke for an existing object, `verify` would fail (see
+  [Can the DR23 index be relied on for DR24?](#can-the-dr23-index-be-relied-on-for-dr24)).
   The DR24 size estimate scales the DR23 sizes by 1.2 (measured per-file ratios:
   1.10–1.31; COSMOS total 1.125), so treat it as approximate. Including the new
   objects would need a DR24 index, or the IRSA HATS release on S3, best run from AWS
