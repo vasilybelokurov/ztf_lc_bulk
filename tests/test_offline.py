@@ -147,3 +147,36 @@ def test_pipeline_end_to_end_resume_and_failure(tmp_path, mirror):
     v = verify(gp, out)
     assert v["pass"], v
     assert v["n_lc_rows"] == np.unique(good["objectid"].to_numpy()).size
+
+
+def test_file_size_table():
+    from ztf_lc_bulk.match import estimate_download, file_bytes
+    from pathlib import Path
+    import ztf_lc_bulk
+    t = pq.read_table(Path(ztf_lc_bulk.__file__).parent / "data" / "dr23_file_bytes.parquet")
+    assert t.num_rows == 177218
+    assert 7.9e12 < t["bytes"].to_numpy().sum() < 8.05e12          # DR23 = 7.97 TB
+    # HTTP Content-Length of two COSMOS files (2026-10-14): table within 2%
+    for fid, true in ((36505, 31373801), (121816, 4313403)):        # zr_c03_q1, 1462 zr_c10_q2
+        assert abs(file_bytes([fid])[0] / true - 1) < 0.02
+    e = estimate_download([36505, 36505, 121816], rate_mbps=1.0)    # duplicates counted once
+    assert e["n_files"] == 2 and abs(e["download_gb"] - 0.0357) < 0.001
+
+
+def test_extract_refuses_large_download(tmp_path, mirror):
+    import ztf_lc_bulk.fetch as fetch
+    from ztf_lc_bulk.pipeline import DownloadTooLarge
+    root, files = mirror
+    m = make_match(files)
+    mp = tmp_path / "match.parquet"; pq.write_table(m, mp)
+    calls = []
+    orig = fetch.download
+    fetch.download = lambda *a, **k: calls.append(a) or (_ for _ in ()).throw(AssertionError("fetched"))
+    try:
+        with pytest.raises(DownloadTooLarge):
+            run_extract(mp, tmp_path / "out", mirror=None, max_gb=1e-6, log=lambda *_: None)
+        # the same files in a mirror cost nothing -> no refusal
+        s = run_extract(mp, tmp_path / "out", mirror=root, max_gb=1e-6, log=lambda *_: None)
+    finally:
+        fetch.download = orig
+    assert calls == [] and s["ok"] == 3

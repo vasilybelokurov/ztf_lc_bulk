@@ -17,6 +17,7 @@ import requests
 
 from .extract import extract_file
 from .fetch import resolve
+from .match import estimate_download
 
 
 def _part_path(out_dir: Path, fileid: int) -> Path:
@@ -54,14 +55,22 @@ def _process(fileid, filename, oids, out_dir, raw_dir, mirror, keep_raw, session
             "t_extract": round(time.time() - t1, 2)}
 
 
+class DownloadTooLarge(RuntimeError):
+    pass
+
+
 def run_extract(match_path, out_dir, workers: int = 4, mirror=None,
                 keep_raw: bool = False, max_files: int | None = None,
-                log=print) -> dict:
+                max_gb: float | None = None, log=print) -> dict:
     """Extract light curves for all files in a match table. Resumable.
 
     A file is skipped if its output part exists (parts are written via
     tmp + rename, so an existing part is complete). Every attempt is appended
     to ``out_dir/manifest.jsonl``; failures are retried on the next run.
+
+    The expected download of the remaining files is logged before starting
+    (files present in ``mirror`` are not counted). If it exceeds ``max_gb``,
+    :class:`DownloadTooLarge` is raised and nothing is fetched.
     """
     out_dir = Path(out_dir)
     (out_dir / "lc").mkdir(parents=True, exist_ok=True)
@@ -73,6 +82,13 @@ def run_extract(match_path, out_dir, workers: int = 4, mirror=None,
         todo = todo[:max_files]
     log(f"{len(jobs)} files in plan, {len(jobs) - len(todo)} already done, "
         f"{len(todo)} to process with {workers} workers")
+    to_fetch = [j[0] for j in todo if not (mirror and (mirror / j[1]).exists())]
+    est = estimate_download(to_fetch)
+    log(f"expected download: {est['n_files']} files, {est['download_gb']:.2f} GB, "
+        f"~{est['hours_at_rate']:.1f} h at {est['rate_mbps']:g} MB/s")
+    if max_gb is not None and est["download_gb"] > max_gb:
+        raise DownloadTooLarge(f"expected download {est['download_gb']:.1f} GB exceeds "
+                               f"max_gb={max_gb:g}; raise the limit to proceed")
 
     lock = threading.Lock()
     manifest = open(out_dir / "manifest.jsonl", "a")

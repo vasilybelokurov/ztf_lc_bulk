@@ -13,15 +13,16 @@ only the files that are needed and keeps only the matched objects.
 
 Requirements:
 - Python ≥ 3.10.
-- A WSDB account with read access to `koposov.ztf_23_objs` and `koposov.ztf_23_files`.
-  Ask Sergey if you get a permission error.
+- A WSDB account. The index tables `koposov.ztf_23_objs` and `koposov.ztf_23_files`
+  are readable by the role `dbuser`, which standard WSDB accounts belong to (checked
+  2026-10-14). If you get a permission error, ask Sergey Koposov.
 - Free disk space for the files in flight. Each raw file is deleted after extraction,
   so this is about `workers × 30 MB` plus the output.
 
 ```bash
 source ~/Work/venvs/.venv/bin/activate                 # or your own env
 pip install -e ~/Work/Code/ztf_lc_bulk                # developers: editable
-# pip install git+https://github.com/vasilybelokurov/ztf_lc_bulk.git@v0.1.0   # users
+# pip install git+https://github.com/vasilybelokurov/ztf_lc_bulk.git@v0.1.1   # users
 python -m pytest ~/Work/Code/ztf_lc_bulk -q           # offline tests, ~3 s
 ```
 
@@ -36,13 +37,20 @@ ztf-lc-bulk match --table vasily.cosmos2020_classic --id id --ra ra --dec dec \
 ztf-lc-bulk match --input targets.csv --id name --ra ra --dec dec --out runs/mylist
 # 2. extract (resumable: rerun to retry failed files), 3. verify, 4. optional API check
 ztf-lc-bulk extract --out runs/cosmos --workers 4      # --mirror /path/to/lc  if you have one
+                                                       # --max-gb N  to allow > 50 GB
 ztf-lc-bulk verify  --out runs/cosmos
 ztf-lc-bulk validate-api --out runs/cosmos --n 40
 ```
 
-- `match` prints `n_files`. The download is that many **whole** files: DR23 files have a
-  median size of 10 MB and a mean of 43 MB, and IRSA serves about 1 MB/s. Estimate the
-  time before starting a large run.
+- **Check the size before extracting.** `match` prints `n_files`, `download_gb_est` and
+  `download_hours_at_1MBps`. The download is that many **whole** files: DR23 files have
+  a median size of 10.5 MB and a mean of 45 MB, and IRSA served 0.7–1.1 MB/s when
+  measured.
+- `extract` logs the same estimate for the files still to fetch (files found in
+  `--mirror` cost nothing). It **refuses to start above 50 GB** unless you pass
+  `--max-gb`. In Python, `run_extract(..., max_gb=None)` has no limit.
+- File sizes come from `ztf_lc_bulk/data/dr23_file_bytes.parquet` (all 177,218 files).
+  It agrees with HTTP Content-Length to 0.2% in total and ±1.5% per file.
 - `--where` adds an SQL condition on a WSDB table, using the alias `c`, e.g.
   `--where "c.lp_mass_med < 9.5"`.
 
@@ -126,7 +134,7 @@ Each line records: `fileid`, `filename`, `status` (`ok` or `failed`), `n_request
 ## Tests
 
 ```bash
-python -m pytest -q                 # offline: 16 tests, no network
+python -m pytest -q                 # offline: 18 tests, no network
 python -m pytest -m network -v      # WSDB + IRSA: 2 tests, ~15 s, downloads ~3 MB
 ```
 
@@ -137,6 +145,8 @@ python -m pytest -m network -v      # WSDB + IRSA: 2 tests, ~15 s, downloads ~3 
 | | `extract_selects_and_reports_missing` | Only requested ids are returned, unknown ids are reported, and mag stays paired with hmjd after sorting |
 | | `plan_groups_unique_objects` | Grouping by file; objects matched by two targets are extracted once |
 | | `pipeline_end_to_end_resume_and_failure` | Synthetic mirror of 3 files plus 1 unreachable file. 3 ok and 1 failed (no crash); a rerun skips the 3 and retries the failure; mirror files are never deleted; `verify` passes |
+| | `file_size_table` | Shipped size table has all 177,218 files and totals 7.97 TB; two files agree with IRSA Content-Length to < 2%; duplicate file ids are counted once |
+| | `extract_refuses_large_download` | Above `max_gb`, extract raises before any download; the same files in a mirror count as 0 GB and extraction proceeds |
 | `test_fetch.py` | `ok` | Download, and no second request if the file exists |
 | | `retry_then_ok_and_retry_after` | 503 → backoff 2 s, 503 with Retry-After: 7 → waits 7 s, then success |
 | | `short_read_is_retried` | A truncated body is rejected and retried, with no `.part` left behind |
@@ -163,17 +173,37 @@ separately.
 
 ## Validation run: COSMOS2020 Classic (2026-10-14)
 
+All ZTF DR23 light curves within 1″ of every source in COSMOS2020 Classic
+(WSDB table `vasily.cosmos2020_classic`, 1,720,700 sources over a 3.4 deg² bounding
+box) were extracted in **about 11 minutes** in total. Almost all of that time was
+download.
+
 | Step | Result |
 |---|---|
 | match (1″) | 1,720,700 targets → 186,359 pairs, 88,676 sources, 185,079 objectids, 36 files; 16 s |
-| extract | 36/36 files, 423.7 MB downloaded in 644 s (0.66 MB/s, 4 workers); 14,439,542 epochs; output 144 MB |
+| extract | 36/36 files, 423.7 MB downloaded in 644 s (0.66 MB/s, 4 workers); 14,439,542 epochs; output 144 MB. The size estimate was 0.424 GB |
 | verify | pass. catflags == 0 for 95.6% of epochs |
 | validate-api (40 objects) | 40/40 pass. All 19,216 parquet epochs found; \|Δt\| ≤ 0.42 s, \|Δmag\| ≤ 5e-8 |
 | `load(primary=True)` | 150,374 light curves for 87,110 sources (g 31,877, r 79,061, i 39,436); 1.2 s |
 
-The files used were field 468 (g, r, i; 9 quadrants each) and field 1462 (r; 9
-quadrants). Each quadrant file covers about 0.74 deg², and 30.4% of the 609,226
-objects in them were needed.
+**Coverage.** Only 5.2% of COSMOS sources (88,676) have a ZTF object within 1″,
+because most COSMOS sources are far fainter than the ZTF single-epoch limit (about
+20.5–21 mag). After the catflags == 0 cut, with one primary light curve per source
+and band:
+
+| Band | Sources | Median clean epochs | 90th percentile | Sources with ≥ 100 epochs |
+|---|---|---|---|---|
+| g | 31,877 | 9 | 252 | 7,871 |
+| r | 79,061 | 11 | 582 | 19,348 |
+| i | 39,436 | 10 | 55 | 0 |
+
+22,329 sources have light curves in all of g, r and i, and 38,335 in r only. Most
+light curves are short: these are faint objects near the limit, detected on the
+better nights only.
+
+**Files.** The files used were field 468 (g, r, i; 9 quadrants each) and field 1462
+(r; 9 quadrants). Each quadrant file covers about 0.74 deg², and 30.4% of the
+609,226 objects in them were needed.
 
 ## Known issues and caveats
 - **The API's `ztf_dr23` collection has 0.2% more epochs than the parquet release**: 38
@@ -181,7 +211,9 @@ objects in them were needed.
   night 60352. The cause is unknown.
 - **Throughput.** IRSA serves about 0.7–1.1 MB/s, and 4 workers were no faster than one
   `curl`. The download size is set by sky area, not by the number of sources: a whole
-  file must be fetched to read any object in it. All of DR23 is 177,218 files and 7.6 TB.
+  file must be fetched to read any object in it. All of DR23 is 177,218 files and
+  7.97 TB. All NSA v1_0_1 galaxies (641,409) would need 83,894 files, 1.48 TB:
+  about 17 days at 1 MB/s.
 - **DR23 only**, because the index exists only for DR23. DR24 would need a new index or
   the IRSA HATS release on S3, best run from AWS us-east-1.
 - **Remote partial reads do not help.** Each file is a single parquet row group, so

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ztf_lc_bulk"
-version = "0.1.0"
+version = "0.1.1"
 description = "Bulk extraction of ZTF DR23 light curves from the IRSA parquet release via the WSDB index"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,6 +26,9 @@ ztf-lc-bulk = "ztf_lc_bulk.__main__:main"
 
 [tool.setuptools]
 packages = ["ztf_lc_bulk"]
+
+[tool.setuptools.package-data]
+ztf_lc_bulk = ["data/*.parquet"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

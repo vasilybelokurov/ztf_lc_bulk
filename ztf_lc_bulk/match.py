@@ -89,15 +89,41 @@ def save_match(tab: pa.Table, path: str | Path) -> None:
     pq.write_table(tab, path)
 
 
+ASSUMED_RATE_MBPS = 1.0  # IRSA rate measured 2026-10-14: 0.66 (4 workers) - 1.1 (one curl) MB/s
+
+
+def file_bytes(fileids) -> np.ndarray:
+    """Size in bytes of DR23 parquet files, from the table shipped with the package.
+
+    The table (``data/dr23_file_bytes.parquet``, 177,218 files, 7.97 TB) agrees
+    with HTTP Content-Length to 0.2% in total and ±1.5% per file on 36 checked files.
+    """
+    t = pq.read_table(Path(__file__).parent / "data" / "dr23_file_bytes.parquet")
+    lookup = np.zeros(int(t["fileid"].to_numpy().max()) + 1, np.int64)
+    lookup[t["fileid"].to_numpy()] = t["bytes"].to_numpy()
+    return lookup[np.asarray(fileids, dtype=np.int64)]
+
+
+def estimate_download(fileids, rate_mbps: float = ASSUMED_RATE_MBPS) -> dict:
+    """Bytes and wall time to download the unique files in ``fileids``."""
+    uf = np.unique(np.asarray(fileids))
+    b = int(file_bytes(uf).sum())
+    return {"n_files": int(uf.size), "download_gb": round(b / 1e9, 3),
+            "hours_at_rate": round(b / (rate_mbps * 1e6) / 3600, 2), "rate_mbps": rate_mbps}
+
+
 def summarize_match(tab: pa.Table) -> dict:
     d = {c: tab.column(c).to_numpy() for c in ("src_id", "objectid", "fileid", "nepochs")}
     _, first = np.unique(d["objectid"], return_index=True)
+    est = estimate_download(d["fileid"])
     return {
         "n_pairs": tab.num_rows,
         "n_sources": int(np.unique(d["src_id"]).size),
         "n_objectids": int(first.size),
         "n_files": int(np.unique(d["fileid"]).size),
         "n_epochs_unique_objects": int(d["nepochs"][first].astype(np.int64).sum()),
+        "download_gb_est": est["download_gb"],
+        f"download_hours_at_{ASSUMED_RATE_MBPS:g}MBps": est["hours_at_rate"],
     }
 
 

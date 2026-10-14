@@ -22,8 +22,8 @@ source ~/Work/venvs/.venv/bin/activate
 # 1. match: a WSDB table, or a local file (.parquet/.csv/.fits) uploaded as a temp table
 ztf-lc-bulk match --table schema.table --id id --ra ra --dec dec --radius 1.0 --out runs/NAME
 ztf-lc-bulk match --input targets.csv --id name --ra ra --dec dec --out runs/NAME
-# 2. Check the match summary before extracting: download = n_files whole files
-#    (DR23 file size: median 10 MB, mean 43 MB; r band in the primary grid is the largest)
+# 2. Read download_gb_est / download_hours_at_1MBps in the match summary and tell
+#    the user before extracting (extract refuses > 50 GB unless --max-gb is given)
 # 3. extract (resumable; rerun to retry failures), then verify
 ztf-lc-bulk extract --out runs/NAME --workers 4
 ztf-lc-bulk verify  --out runs/NAME
