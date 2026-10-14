@@ -21,7 +21,7 @@ Requirements:
 ```bash
 source ~/Work/venvs/.venv/bin/activate                 # or your own env
 pip install -e ~/Work/Code/ztf_lc_bulk                # developers: editable
-# pip install git+<repo-url>@v0.1.0                   # users: pinned version
+# pip install git+https://github.com/vasilybelokurov/ztf_lc_bulk.git@v0.1.0   # users
 python -m pytest ~/Work/Code/ztf_lc_bulk -q           # offline tests, ~3 s
 ```
 
