@@ -180,3 +180,23 @@ def test_extract_refuses_large_download(tmp_path, mirror):
     finally:
         fetch.download = orig
     assert calls == [] and s["ok"] == 3
+
+
+def test_release_filename():
+    from ztf_lc_bulk.pipeline import release_filename
+    f = "lc_dr23/0/field000468/ztf_000468_zr_c03_q1_dr23.parquet"
+    assert release_filename(f, "dr23") == f
+    assert release_filename(f, "dr24") == "lc_dr24/0/field000468/ztf_000468_zr_c03_q1_dr24.parquet"
+    with pytest.raises(ValueError):
+        release_filename(f, "dr99")
+
+
+def test_run_dir_cannot_mix_releases(tmp_path, mirror):
+    from ztf_lc_bulk.pipeline import run_release
+    root, files = mirror
+    mp = tmp_path / "match.parquet"; pq.write_table(make_match(files), mp)
+    out = tmp_path / "out"
+    run_extract(mp, out, mirror=root, log=lambda *_: None)          # dr23 by default
+    assert run_release(out) == "dr23"
+    with pytest.raises(ValueError, match="holds release dr23"):
+        run_extract(mp, out, mirror=root, release="dr24", log=lambda *_: None)

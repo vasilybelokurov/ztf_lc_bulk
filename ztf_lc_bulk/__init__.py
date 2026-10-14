@@ -11,7 +11,7 @@ Pipeline
 3. ``verify``  : completeness and consistency checks on the output.
 """
 
-__version__ = "0.1.1"
+__version__ = "0.2.0"
 
 IRSA_BASE_URL = "https://irsa.ipac.caltech.edu/data/ZTF/lc/"
 INDEX_OBJS = "koposov.ztf_23_objs"

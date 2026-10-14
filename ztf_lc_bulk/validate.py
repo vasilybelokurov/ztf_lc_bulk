@@ -73,13 +73,19 @@ def compare(row, api: pd.DataFrame, extra_log: list | None = None) -> dict:
     return out
 
 
-def api_spotcheck(run_dir, n: int = 40, threads: int = 4, seed: int = 1) -> dict:
+def api_spotcheck(run_dir, n: int = 40, threads: int = 4, seed: int = 1,
+                  collection: str | None = None) -> dict:
     """Compare ``n`` extracted light curves with the API.
+
+    ``collection`` defaults to ``ztf_<release>`` of the run (``run.json``).
 
     Half the sample is random, half is drawn from the 2,000 longest light curves.
     Returns a summary dict plus per-object results (``table``) and API-only
     epochs (``api_only``) as DataFrames.
     """
+    from functools import partial
+    from .pipeline import run_release
+    collection = collection or f"ztf_{run_release(run_dir)}"
     lc = ds.dataset(Path(run_dir) / "lc", format="parquet").to_table().to_pandas()
     rng = np.random.default_rng(seed)
     n = min(n, len(lc))
@@ -88,11 +94,11 @@ def api_spotcheck(run_dir, n: int = 40, threads: int = 4, seed: int = 1) -> dict
                           rng.choice(longest, min(n - n // 2, longest.size), replace=False)])
     sample = lc.iloc[idx]
     with ThreadPoolExecutor(threads) as ex:  # IRSA fails at >=16 concurrent requests
-        apis = list(ex.map(fetch_api, sample["objectid"]))
+        apis = list(ex.map(partial(fetch_api, collection=collection), sample["objectid"]))
     extra: list = []
     res = pd.DataFrame([compare(r, a, extra) for (_, r), a in zip(sample.iterrows(), apis)])
     res["filterid"] = sample["filterid"].to_numpy()
-    return {"n_objects": len(res), "n_pass": int(res["ok"].sum()),
+    return {"collection": collection, "n_objects": len(res), "n_pass": int(res["ok"].sum()),
             "parquet_epochs": int(res["n_parquet"].sum()),
             "api_only_epochs": int(res["n_api_only"].sum()),
             "max_dt_s": float(res["max_dt_s"].max()), "max_dmag": float(res["max_dmag"].max()),

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ztf_lc_bulk"
-version = "0.1.1"
+version = "0.2.0"
 description = "Bulk extraction of ZTF DR23 light curves from the IRSA parquet release via the WSDB index"
 readme = "README.md"
 requires-python = ">=3.10"

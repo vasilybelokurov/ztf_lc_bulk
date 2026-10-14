@@ -55,6 +55,8 @@ def main(argv=None):
     e.add_argument("--mirror", default=None, help="root of a local IRSA lc/ mirror")
     e.add_argument("--keep-raw", action="store_true")
     e.add_argument("--max-files", type=int, default=None)
+    e.add_argument("--release", choices=["dr23", "dr24"], default="dr23",
+                   help="parquet release to read (objectids always from the DR23 index)")
     e.add_argument("--max-gb", type=float, default=50.0,
                    help="refuse to start if the expected download exceeds this (default 50 GB)")
 
@@ -83,7 +85,8 @@ def main(argv=None):
         from .pipeline import DownloadTooLarge, run_extract
         try:
             res = run_extract(match_path, out, workers=a.workers, mirror=a.mirror,
-                              keep_raw=a.keep_raw, max_files=a.max_files, max_gb=a.max_gb)
+                              keep_raw=a.keep_raw, max_files=a.max_files, max_gb=a.max_gb,
+                              release=a.release)
         except DownloadTooLarge as err:
             raise SystemExit(f"{err} (use --max-gb)")
     elif a.cmd == "verify":

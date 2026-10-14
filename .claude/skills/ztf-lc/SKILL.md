@@ -1,6 +1,6 @@
 ---
 name: ztf-lc
-description: Get ZTF DR23 light curves for a target list (thousands to millions of sources) with the ztf_lc_bulk package, which crossmatches in WSDB against koposov.ztf_23_objs and extracts from the IRSA parquet release. Use whenever a task needs ZTF light curves, ZTF photometry time series, ZTF objectids for a catalogue, or asks to "download ZTF", "get ZTF lightcurves", "ZTF variability" for more than a handful of objects. Use it instead of writing a new IRSA nph_light_curves API downloader.
+description: Get ZTF DR23 or DR24 light curves for a target list (thousands to millions of sources) with the ztf_lc_bulk package, which crossmatches in WSDB against koposov.ztf_23_objs and extracts from the IRSA parquet release. Use whenever a task needs ZTF light curves, ZTF photometry time series, ZTF objectids for a catalogue, or asks to "download ZTF", "get ZTF lightcurves", "ZTF variability" for more than a handful of objects. Use it instead of writing a new IRSA nph_light_curves API downloader.
 ---
 
 # ztf-lc: ZTF light curves via ztf_lc_bulk
@@ -25,7 +25,7 @@ ztf-lc-bulk match --input targets.csv --id name --ra ra --dec dec --out runs/NAM
 # 2. Read download_gb_est / download_hours_at_1MBps in the match summary and tell
 #    the user before extracting (extract refuses > 50 GB unless --max-gb is given)
 # 3. extract (resumable; rerun to retry failures), then verify
-ztf-lc-bulk extract --out runs/NAME --workers 4
+ztf-lc-bulk extract --out runs/NAME --workers 4      # add --release dr24 for DR24 (new run dir)
 ztf-lc-bulk verify  --out runs/NAME
 ztf-lc-bulk validate-api --out runs/NAME --n 20     # optional: compare with IRSA API
 ```
@@ -38,7 +38,9 @@ lc = z.load("runs/NAME", src_ids=[...], long=True) # one row per epoch
 most clean epochs, then longest baseline, then smallest separation.
 
 ## Facts to respect
-- Release is **DR23** (the WSDB index exists only for DR23).
+- Releases: **DR23** (default) or **DR24** (`--release dr24`). Objects are always located
+  through the DR23 index, so DR24 output lacks objects that are new in DR24 (1–8% per file
+  in COSMOS). For those, or for sharp/chi/limitmag/airmass, use the API with COLLECTION=ztf_dr24.
 - `hmjd` is heliocentric MJD, rounded to 1e-5 d (0.86 s).
 - objectids are per band and per field/CCD/quadrant. A source typically has about 2 per
   band, with complementary epochs and field-to-field zero-point offsets of ~0.06 mag

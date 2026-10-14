@@ -104,10 +104,19 @@ def file_bytes(fileids) -> np.ndarray:
     return lookup[np.asarray(fileids, dtype=np.int64)]
 
 
-def estimate_download(fileids, rate_mbps: float = ASSUMED_RATE_MBPS) -> dict:
-    """Bytes and wall time to download the unique files in ``fileids``."""
+# DR24/DR23 size ratio of the same file: 1.31, 1.10, 1.17 on three COSMOS files
+# (2026-10-14). Rough: DR24 per-file sizes are not tabulated.
+SIZE_FACTOR = {"dr23": 1.0, "dr24": 1.2}
+
+
+def estimate_download(fileids, rate_mbps: float = ASSUMED_RATE_MBPS, release: str = "dr23") -> dict:
+    """Bytes and wall time to download the unique files in ``fileids``.
+
+    Exact (±1.5% per file) for DR23; for DR24 the DR23 sizes are scaled by
+    ``SIZE_FACTOR['dr24']``, a rough factor.
+    """
     uf = np.unique(np.asarray(fileids))
-    b = int(file_bytes(uf).sum())
+    b = int(file_bytes(uf).sum() * SIZE_FACTOR[release])
     return {"n_files": int(uf.size), "download_gb": round(b / 1e9, 3),
             "hours_at_rate": round(b / (rate_mbps * 1e6) / 3600, 2), "rate_mbps": rate_mbps}
 

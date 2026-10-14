@@ -19,6 +19,25 @@ from .extract import extract_file
 from .fetch import resolve
 from .match import estimate_download
 
+RELEASES = ("dr23", "dr24")
+
+
+def release_filename(filename: str, release: str) -> str:
+    """Map an index (DR23) file path to the same field/band/CCD/quadrant file of ``release``.
+
+    Valid because DR24 keeps every DR23 objectid in the same file (checked on
+    3 COSMOS files: 100% of DR23 objects present, identical positions and epochs).
+    """
+    if release not in RELEASES:
+        raise ValueError(f"release must be one of {RELEASES}")
+    return filename.replace("lc_dr23/", f"lc_{release}/").replace("_dr23.parquet", f"_{release}.parquet")
+
+
+def run_release(out_dir) -> str:
+    """Release recorded for a run directory (``run.json``); 'dr23' if absent."""
+    p = Path(out_dir) / "run.json"
+    return json.loads(p.read_text())["release"] if p.exists() else "dr23"
+
 
 def _part_path(out_dir: Path, fileid: int) -> Path:
     return out_dir / "lc" / f"file_{fileid:06d}.parquet"
@@ -61,7 +80,7 @@ class DownloadTooLarge(RuntimeError):
 
 def run_extract(match_path, out_dir, workers: int = 4, mirror=None,
                 keep_raw: bool = False, max_files: int | None = None,
-                max_gb: float | None = None, log=print) -> dict:
+                max_gb: float | None = None, release: str = "dr23", log=print) -> dict:
     """Extract light curves for all files in a match table. Resumable.
 
     A file is skipped if its output part exists (parts are written via
@@ -71,20 +90,32 @@ def run_extract(match_path, out_dir, workers: int = 4, mirror=None,
     The expected download of the remaining files is logged before starting
     (files present in ``mirror`` are not counted). If it exceeds ``max_gb``,
     :class:`DownloadTooLarge` is raised and nothing is fetched.
+
+    ``release`` selects the parquet release to read ("dr23" or "dr24"). The
+    objectids always come from the DR23 index, so for DR24 the output holds
+    the full DR24 light curves of objects that already existed in DR23; objects
+    new in DR24 are not included. The release is recorded in ``run.json`` and
+    a run directory cannot mix releases.
     """
     out_dir = Path(out_dir)
     (out_dir / "lc").mkdir(parents=True, exist_ok=True)
+    rj = out_dir / "run.json"
+    if rj.exists() and run_release(out_dir) != release:
+        raise ValueError(f"{out_dir} holds release {run_release(out_dir)}, not {release}; "
+                         "use a separate run directory")
+    if not rj.exists():
+        rj.write_text(json.dumps({"release": release}))
     raw_dir = out_dir / "raw"
     mirror = Path(mirror) if mirror else None
-    jobs = plan(pq.read_table(match_path))
+    jobs = [(f, release_filename(n, release), o) for f, n, o in plan(pq.read_table(match_path))]
     todo = [j for j in jobs if not _part_path(out_dir, j[0]).exists()]
     if max_files is not None:
         todo = todo[:max_files]
     log(f"{len(jobs)} files in plan, {len(jobs) - len(todo)} already done, "
         f"{len(todo)} to process with {workers} workers")
     to_fetch = [j[0] for j in todo if not (mirror and (mirror / j[1]).exists())]
-    est = estimate_download(to_fetch)
-    log(f"expected download: {est['n_files']} files, {est['download_gb']:.2f} GB, "
+    est = estimate_download(to_fetch, release=release)
+    log(f"expected download ({release}): {est['n_files']} files, {est['download_gb']:.2f} GB, "
         f"~{est['hours_at_rate']:.1f} h at {est['rate_mbps']:g} MB/s")
     if max_gb is not None and est["download_gb"] > max_gb:
         raise DownloadTooLarge(f"expected download {est['download_gb']:.1f} GB exceeds "
@@ -133,8 +164,11 @@ def verify(match_path, out_dir) -> dict:
 
     Checks: every matched objectid present exactly once; nepochs equals list
     length for every list column; hmjd non-decreasing within each light curve;
-    filterid/fieldid/rcid agree with the index.
+    filterid/fieldid/rcid agree with the index; nepochs equals the index value
+    for DR23 and is at least the index value for DR24 (later releases only add
+    epochs).
     """
+    release = run_release(out_dir)
     m = pq.read_table(match_path)
     mo = m.column("objectid").to_numpy()
     uo, first = np.unique(mo, return_index=True)
@@ -160,8 +194,12 @@ def verify(match_path, out_dir) -> dict:
     pos = np.clip(pos, 0, uo.size - 1)
     idx = first[pos]
     agree = ok
-    for c in ("filterid", "fieldid", "rcid", "nepochs"):
+    for c in ("filterid", "fieldid", "rcid"):
         agree &= m.column(c).to_numpy()[idx].astype(np.int64) == lc.column(c).to_numpy().astype(np.int64)
+    ne_index = m.column("nepochs").to_numpy()[idx].astype(np.int64)
+    agree &= (ne == ne_index) if release == "dr23" else (ne >= ne_index)
+    res["release"] = release
+    res["n_epochs_index"] = int(ne_index.sum())
     res["n_index_disagree"] = int((~agree).sum())
     res["n_epochs_total"] = int(ne.sum())
     res["catflags0_frac"] = float((lc.column("catflags").combine_chunks().flatten().to_numpy() == 0).mean())
