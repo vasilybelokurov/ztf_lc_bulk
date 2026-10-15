@@ -59,7 +59,7 @@ def select_primary(df: pd.DataFrame) -> pd.DataFrame:
 
 def load(run_dir, src_ids=None, bands=None, catflags0: bool = True,
          primary: bool = False, min_epochs: int = 1, long: bool = False,
-         match_path=None) -> pd.DataFrame:
+         match_path=None, exposures: bool = False) -> pd.DataFrame:
     """Load extracted light curves joined to the target ids.
 
     Parameters
@@ -80,6 +80,11 @@ def load(run_dir, src_ids=None, bands=None, catflags0: bool = True,
         Return one row per epoch instead of one row per (src_id, objectid).
     match_path : path, optional
         Defaults to ``run_dir/match.parquet``.
+    exposures : bool
+        Add per-epoch image metadata (``exposures.EXPOSURE_COLS``: expid, mjd_mid,
+        maglimit, limitmag, magzp, seeing, airmass, ...) from ``run_dir/exposures.parquet``
+        (build it with ``ztf-lc-bulk exposures``). Epochs without an image within 5 s
+        get expid -1 and NaN.
 
     Returns
     -------
@@ -136,14 +141,27 @@ def load(run_dir, src_ids=None, bands=None, catflags0: bool = True,
         meta = meta.reset_index(drop=True)
     meta.insert(2, "band", meta["filterid"].map(FILTER_NAMES))
 
-    if not long:
-        for c in LIST_COLS:
-            meta[c] = t.column(c).to_pylist() if t.num_rows == 0 else \
-                list(np.split(t.column(c).combine_chunks().flatten().to_numpy(),
-                              np.cumsum(t["nepochs"].to_numpy())[:-1]))
-        return meta
     rep = t["nepochs"].to_numpy()
+    flat = {c: t.column(c).combine_chunks().flatten().to_numpy() for c in LIST_COLS} \
+        if t.num_rows else {c: np.array([]) for c in LIST_COLS}
+    cols = list(LIST_COLS)
+    if exposures:
+        from .exposures import EXPOSURE_COLS, match_epochs, read_exposures
+        exp = read_exposures(run_dir)
+        r = lambda c: np.repeat(meta[c].to_numpy(), rep)  # noqa: E731
+        idx, _ = match_epochs(exp, r("fieldid"), r("rcid"), r("filterid"), r("objra"), r("objdec"),
+                              flat["hmjd"])
+        sel = exp.reindex(idx)  # idx -1 -> NaN row
+        for c in EXPOSURE_COLS:
+            flat[c] = sel[c].to_numpy()
+        flat["expid"] = np.where(idx >= 0, flat["expid"], -1).astype(np.int64)
+        cols += EXPOSURE_COLS
+
+    if not long:
+        for c in cols:
+            meta[c] = list(np.split(flat[c], np.cumsum(rep)[:-1])) if t.num_rows else []
+        return meta
     out = meta.loc[meta.index.repeat(rep)].reset_index(drop=True)
-    for c in LIST_COLS:
-        out[c] = t.column(c).combine_chunks().flatten().to_numpy()
+    for c in cols:
+        out[c] = flat[c]
     return out

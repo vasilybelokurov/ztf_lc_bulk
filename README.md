@@ -7,7 +7,10 @@ It then downloads only the files that are needed, from DR23 or DR24
 (`--release dr24`), and keeps only the matched objects.
 
 - Use it for lists of more than ~100 targets.
-- For a handful of objects, or when you need sharp/chi/limitmag/airmass, use the IRSA
+- Per-epoch image metadata (limitmag, maglimit, zeropoint, seeing, airmass, expid) and
+  per-object non-detections: `ztf-lc-bulk exposures`, then `load(..., exposures=True)`.
+  See [Per-exposure metadata](#per-exposure-metadata).
+- For a handful of objects, or when you need sharp/chi per epoch, use the IRSA
   light-curve API instead.
 - **DR24 limitation:** objects are located through the DR23 index, so DR24 output
   holds the full DR24 light curves of objects that already existed in DR23. Objects
@@ -46,6 +49,8 @@ ztf-lc-bulk extract --out runs/cosmos --workers 4      # --mirror /path/to/lc  i
                                                        # --max-gb N  to allow > 50 GB
 ztf-lc-bulk verify  --out runs/cosmos
 ztf-lc-bulk validate-api --out runs/cosmos --n 40
+# 5. optional: per-image metadata -> runs/cosmos/exposures.parquet (COSMOS: 95 s)
+ztf-lc-bulk exposures --out runs/cosmos
 ```
 
 - **Check the size before extracting.** `match` prints `n_files`, `download_gb_est` and
@@ -71,9 +76,13 @@ assert z.verify("runs/x/match.parquet", "runs/x")["pass"]
 
 df = z.load("runs/x", primary=True)                  # one row per (src_id, band)
 lc = z.load("runs/x", src_ids=[123], long=True)      # one row per epoch
+
+z.build_exposures("runs/x")                          # same as `ztf-lc-bulk exposures`
+lc = z.load("runs/x", long=True, exposures=True)     # + expid, limitmag, maglimit, seeing, ...
+nd = z.nondetections("runs/x", columns=["limitmag", "mjd_mid"])  # images without a detection
 ```
 
-`load(run_dir, src_ids=None, bands=None, catflags0=True, primary=False, min_epochs=1, long=False)`:
+`load(run_dir, src_ids=None, bands=None, catflags0=True, primary=False, min_epochs=1, long=False, exposures=False)`:
 
 - `catflags0` keeps only epochs with catflags == 0.
 - `min_epochs` drops (src_id, objectid) pairs with fewer epochs after the cuts.
@@ -81,6 +90,175 @@ lc = z.load("runs/x", src_ids=[123], long=True)      # one row per epoch
   cuts, then longest baseline, then smallest separation, then smallest objectid. This
   follows `ztf_qso_parquet/select_primary_lightcurves.py`.
 - Without `primary`, every objectid within the radius is kept.
+- `exposures` adds the image columns below to every epoch (needs `exposures.parquet`).
+
+## Per-exposure metadata
+
+### Why
+The IRSA light-curve parquet files store five numbers per epoch: `hmjd`, `mag`,
+`magerr`, `clrcoeff`, `catflags` (checked against the original DR24 file footer, not just
+our extraction). Nothing about the image an epoch came from is included: no depth,
+seeing, airmass, zeropoint, Moon phase or exposure id. This feature adds those, plus
+the list of images in which an object was **not** detected; light curves contain
+detections only, so non-detections are otherwise invisible.
+
+### Key idea: image properties are shared
+A ZTF science image is one exposure on one CCD quadrant in one filter (~0.7 deg²).
+Its depth, seeing, zeropoint, etc. are the same for every source on it. So the
+metadata is retrieved **once per image**, not once per source, and then attached to
+every epoch taken on that image.
+
+### Where the numbers come from (two IRSA services)
+
+**Route A: the image catalogue** (IRSA science-image metadata table
+`ztf.ztf_current_meta_sci`, queried through IBE:
+`https://irsa.ipac.caltech.edu/ibe/search/ztf/products/sci?WHERE=field=<N>&ct=csv`).
+- One row per image ever taken, independent of any source.
+- One query per ZTF field returns all 64 quadrants × 3 filters. COSMOS field 468:
+  104,937 images, 15 MB, 20–40 s; field 1462: 8,059 images, 10–20 s.
+- Columns kept: identifiers (`field, ccdid, qid, rcid, fid, filtercode, expid, pid`),
+  timing (`obsjd` = exposure start in JD UTC, `exptime`), geometry (centre `ra, dec`;
+  corners `ra1..dec4`), quality (`infobits, seeing, airmass, maglimit`) and `moonillf`.
+- The same rows are served by IRSA TAP (`ztf.ztf_current_meta_sci`); a check on field
+  1462 gave identical rows and `maglimit` values. IBE is used because it is a plain GET.
+- `moonesb` (Moon excess sky brightness) exists but is 0 in every COSMOS row, so it
+  is dropped.
+- Images with `exptime == 0` are dropped.
+
+**Route B: the light-curve API** (`https://irsa.ipac.caltech.edu/cgi-bin/ZTF/nph_light_curves?ID=<objectid>&COLLECTION=ztf_<release>`).
+Five per-image quantities exist **only** in the light-curve service, not in the image
+catalogue: `limitmag`, `magzp`, `magzprms`, `clrcounc`, `programid`. The API repeats
+them in every light curve, on every epoch, together with `expid`. So:
+1. For each quadrant (field, rcid, filter), take the image centre from route A and ask
+   the WSDB index (`koposov.ztf_23_objs`, q3c cone of 0.65° + field/rcid/filter) for the
+   `n_api` (default 3) objects with the most epochs. One SQL query (lateral join) for
+   all quadrants; ~0.4 s per quadrant. Choosing from the index, not from the run, makes
+   this work when the run's own targets are faint and sparsely sampled.
+2. Fetch those light curves from the API (4 threads; IRSA fails at ≥ 16 concurrent).
+3. Keep, per `expid`, the five columns. If two light curves report different `limitmag`
+   for the same image the build fails (they never have).
+4. Join to route A on (field, rcid, fid, expid). `n_api_obj` records how many of the
+   light curves contained the image.
+
+The selected objects are a vehicle; their own photometry is not used. A well-sampled
+object is detected on almost every image. Over the 253 COSMOS quadrants that have
+light curves, 3 objects give `limitmag` for a median 99.2% of the unflagged images
+taken before the DR24 cut-off (5th percentile 83%, lowest 78%, in i-band quadrants
+with ~20 images). The images they miss are mostly flagged (`infobits ≠ 0`); there the
+route-B columns are NaN. Use `--n-api` to query more objects where coverage matters.
+
+Cost (4 threads): COSMOS run quadrants, 108 calls in 32 s; whole fields, 759 calls in
+222 s (~0.3 s per call).
+
+### Scope: which quadrants
+- Default: the quadrants (field × CCD-quadrant × filter) that hold at least one light
+  curve of the run. That is everything `load()` can ever attach.
+- `--whole-fields` (`build_exposures(..., whole_fields=True)`): every quadrant and
+  filter of the run's fields, e.g. for field-wide bad-night studies. Route A costs
+  nothing extra (it already returns whole fields); route B costs 3 calls per extra
+  quadrant. COSMOS (fields 468 + 1462): 384 quadrants, 112,996 images, 759 API
+  light curves, 4 min. 131 of the 384 quadrants get no API light curve because the
+  release has **no light curves there at all** (field 1462 g and i, 3 i-band quadrants
+  of 468; confirmed in `koposov.ztf_23_files`): route A still lists their images, route-B
+  columns are NaN.
+
+### Matching epochs to images
+The parquet `hmjd` is **not** the image time. It is
+
+$$\mathrm{hmjd} = \mathrm{MJD_{UTC}}(\mathrm{obsjd} + \mathrm{exptime}/2) + \frac{\vec r_\oplus \cdot \hat n}{c},$$
+
+the mid-exposure time plus the heliocentric light-travel time for the source direction
+$\hat n$ ($\vec r_\oplus$ = Earth's position relative to the Sun; the term is up to
+±499 s and varies by ~5 s across one quadrant). The build stores `mjd_mid` and
+$\vec r_\oplus / c$ in light-days (`ex, ey, ez`, from astropy) per image, so matching is
+pure numpy:
+1. Group epochs by (fieldid, rcid, filterid).
+2. Find the nearest image using the prediction at the image centre (good to ~5 s).
+3. Recompute the prediction at the object's own position for the four neighbouring
+   images and take the nearest.
+4. Accept if |Δt| ≤ 5 s; otherwise `expid = −1` and NaN columns.
+
+Verified details:
+- UTC (not TDB) is the time scale: TDB predictions are off by 69 s.
+- Mid-exposure (not start): the 180-s exposures are otherwise off by 90 s.
+- Residuals are ≤ 0.46 s (hmjd is stored rounded to 1e-5 d = ±0.43 s); images of one
+  quadrant are ≥ 39.6 s apart, so the match is unambiguous.
+- The API's `mjd` column is the exposure **start**; its `hjd` is mid-exposure and equals
+  parquet `hmjd`.
+- Our light-travel time agrees with astropy's heliocentric correction to < 0.01 s.
+
+### Non-detections
+`nondetections(run_dir, objectids=None, columns=(), edge_margin=10)` returns, for each
+object, the images that should have seen it but have no epoch in its light curve:
+- same quadrant (field, rcid, filter) as the object;
+- the object lies at least `edge_margin` arcsec inside the image footprint (signed
+  distance to the corner polygon in a gnomonic projection). On COSMOS every detection
+  is within −1.54″ of its polygon, so the corners are accurate to ~1.5″; the 10″ margin
+  avoids sources partly off the chip;
+- the image is **in the release**: it holds an epoch of some extracted object or of an
+  API light curve (`n_api_obj > 0`). Route A also lists images taken after the release
+  cut-off, or never released, which would otherwise count as spurious non-detections;
+- all epochs count as detections, whatever their `catflags`.
+
+Output is compact: `objectid`, `exp_row` (row of `read_exposures()`), `edge_dist`
+(arcsec), plus any image `columns` requested, e.g.
+`nondetections(run, columns=["limitmag", "mjd_mid"])`. COSMOS: 60.7M rows, 44 s, 1 GB.
+
+Caveat: an image is "in the release" if anything in its quadrant was detected on it, so
+an image that is in the release but lost for a whole sub-region would appear as
+non-detections there. No such case was seen.
+
+### `limitmag` vs `maglimit`
+They are different estimates and both are kept:
+- `maglimit` (route A) is the science-image header MAGLIM: the median magnitude of
+  PSF-catalog sources with S/N ≈ 5 (ZTF Explanatory Supplement, section on image
+  limiting magnitudes).
+- `limitmag` (route B) is the light-curve "approximate 5σ limiting magnitude
+  corresponding to epoch-based PSF-fit catalog" (Explanatory Supplement, light-curve
+  table).
+- On COSMOS (1,490 images, g/r/i): `limitmag − maglimit` median +0.55 mag, rms 0.21,
+  correlation 0.97. A fit `limitmag ≈ 0.72 + 1.008 maglimit − 0.149 seeing` leaves rms
+  0.14.
+- Which one better predicts actual detection has **not** been established. It can be
+  tested with `nondetections()`: at fixed source magnitude, which limit separates
+  detected from missed images more sharply?
+
+### Usage
+```bash
+pip install -e '.[exposures]'                         # astropy, needed only to build
+ztf-lc-bulk exposures --out runs/NAME                 # run quadrants
+ztf-lc-bulk exposures --out runs/NAME --whole-fields  # all quadrants of the run's fields
+ztf-lc-bulk exposures --out runs/NAME --n-api 5       # more API light curves per quadrant
+```
+```python
+import ztf_lc_bulk as z
+z.build_exposures("runs/NAME")                        # same as the CLI
+exp = z.read_exposures("runs/NAME")                   # the image table
+lc  = z.load("runs/NAME", long=True, exposures=True)  # epochs + image columns (starred below)
+nd  = z.nondetections("runs/NAME", columns=["limitmag", "maglimit", "mjd_mid"])
+```
+Rebuilding is cheap: route-A answers are cached per field in `exposures_ibe/` (delete a
+file to refresh it); route B is re-queried each build. `exposures.json` holds the build
+summary.
+
+### `exposures.parquet` columns
+| Column (`load(exposures=True)` adds the starred ones) | Source | Meaning |
+|---|---|---|
+| `field`, `ccdid`, `qid`, `rcid`, `fid`, `filtercode`, `pid` | A | Image identifiers; rcid = 4 × (ccdid − 1) + qid − 1 |
+| `expid`* | A | Exposure id (shared by the 64 quadrants of one exposure); −1 in `load()` if unmatched |
+| `obsjd` | A | Exposure start, JD (UTC) |
+| `mjd_mid`*, `exptime`* | derived, A | Mid-exposure MJD (UTC); exposure time (s) |
+| `ex`, `ey`, `ez` | derived | Earth's heliocentric ICRS position at `mjd_mid` (light-days) |
+| `ra`, `dec`, `ra1`..`dec4` | A | Image centre and corners (deg) |
+| `maglimit`* | A | Image-header 5σ limit (mag) |
+| `limitmag`* | B | Light-curve 5σ limit (mag); NaN if no API light curve covers the image |
+| `magzp`*, `magzprms`* | B | Photometric zeropoint and its rms (mag) |
+| `clrcounc` | B | Uncertainty of the colour coefficient |
+| `seeing`*, `airmass`* | A | Image FWHM (arcsec); airmass |
+| `moonillf`* | A | Moon illuminated fraction; signed, range −1…+1 (sign convention not checked; use `|moonillf|`, or compute Moon geometry yourself) |
+| `infobits`* | A | Image quality bits; not the same as catflags (see caveats) |
+| `programid`* | B | 1 public (MSIP), 2 collaboration, 3 Caltech (Explanatory Supplement) |
+| `n_api_obj` | B | Number of API light curves containing the image; 0 = not seen by route B |
 
 ## Output layout (`--out` run directory)
 
@@ -89,6 +267,8 @@ lc = z.load("runs/x", src_ids=[123], long=True)      # one row per epoch
 | `match.parquet` | One row per (target, ZTF objectid) pair within the radius |
 | `lc/file_<fileid>.parquet` | One row per ZTF objectid; one file per IRSA input file; zstd |
 | `manifest.jsonl` | One JSON line per file attempt (append-only) |
+| `exposures.parquet`, `exposures.json` | Per-image metadata and build summary (`exposures` command) |
+| `exposures_ibe/` | IBE query cache, one parquet per field |
 | `raw/` | Files being downloaded (`*.part` until complete); empty after a clean run |
 
 ### `match.parquet`
@@ -136,12 +316,16 @@ Each line records: `fileid`, `filename`, `status` (`ok` or `failed`), `n_request
 
    A rerun skips files whose output exists and retries failed ones.
 3. **verify**: compares the output with the match table (see Tests).
+4. **exposures** (optional): one image-catalogue query per field (route A) plus 3 API
+   light curves per quadrant (route B) give a per-image table; `load()` attaches it to
+   epochs by quadrant + predicted heliocentric time. See
+   [Per-exposure metadata](#per-exposure-metadata).
 
 ## Tests
 
 ```bash
-python -m pytest -q                 # offline: 20 tests, no network
-python -m pytest -m network -v      # WSDB + IRSA: 2 tests, ~15 s, downloads ~3 MB
+python -m pytest -q                 # offline: 28 tests, no network
+python -m pytest -m network -v      # WSDB + IRSA: 3 tests, ~50 s, downloads ~6 MB
 ```
 
 | File | Test | What it checks |
@@ -168,6 +352,15 @@ python -m pytest -m network -v      # WSDB + IRSA: 2 tests, ~15 s, downloads ~3 
 | | `load_long` | Epoch-level output, row counts per object |
 | `test_network.py` | `local_upload_equals_table_match` | Uploaded-list match gives exactly the same pairs as the WSDB-table match (COSMOS 1′ box) |
 | | `extract_verify_load_and_api` | Real IRSA download → `verify` passes → `load(primary)` gives one row per (src, band) → API comparison passes |
+| | `exposures_end_to_end` | `build_exposures` on a real i-band run: every epoch matches an image; limitmag present on all clean epochs and equal to the API's per epoch for 2 objects; non-detections respect the edge margin |
+| `test_exposures.py` | `predict_hmjd_matches_astropy` | Our Earth-vector light-travel time equals astropy's heliocentric correction to < 0.01 s (50 random times/positions) |
+| | `match_epochs_picks_right_image_and_rejects` | Object 0.4° off the image centre, images 40 s apart: correct image; epoch with no image → −1; other quadrant / no quadrant handled |
+| | `edge_distance` | Signed distance to the footprint edge (inside, 10″ in, 5″ out, far outside) |
+| | `load_with_exposures` | Long and nested `load(exposures=True)` carry the right expid/limitmag/maglimit; plain `load` unchanged |
+| | `load_unmatched_epoch_gets_minus_one` | An epoch 0.5 d from any image gets expid −1 and NaN |
+| | `nondetections` | Undetected images found; images not in the release excluded; edge margin applied |
+| | `unit_vector_norm` | Unit vectors |
+| | `build_exposures_whole_fields` | With IRSA/WSDB stubbed: default scope = run quadrants only; `whole_fields` = every quadrant of the fields, and the API is asked about each |
 
 **`verify` checks** (run on every real extraction): every matched objectid is present
 exactly once, with no extra rows; `nepochs` equals the length of all five list columns;
@@ -326,7 +519,31 @@ DR24 keeps the DR23 objectids in the same files.
   all objects in the downloaded DR24 files, and count targets that gain a new
   counterpart. That measurement has not been done yet.
 
+## Exposure metadata: COSMOS DR24 (2026-10-15)
+Run `runs/cosmos_dr24` (36 quadrants, 185,079 light curves).
+- Build: 2 IBE queries (113k images) + 108 API light curves, 95 s in total;
+  15,294 images in the run's quadrants, 87.7% with limitmag (the rest are mostly after
+  the DR24 cut-off).
+- Matching: **all 16,343,555 epochs matched**, max |Δt| 0.459 s (hmjd rounding is
+  ±0.43 s); the next image is always ≥ 39.6 s away. 4 s run time.
+- limitmag present on 99.9993% of epochs, 100% of catflags == 0 epochs. 12 random
+  objects (1,020 epochs) not used to build the table: expid and limitmag equal the API's.
+- Footprint: every detection lies within −1.54″ of its image's corner polygon; 0.6%
+  lie < 10″ inside the edge.
+- `--whole-fields` rebuild: 384 quadrants, 112,996 images, 759 API light curves, 4 min.
+  The 36 run quadrants come out identical (15,294 rows, all values equal). Across the
+  253 quadrants that have light curves, `limitmag` is present for a median 99.2% of
+  unflagged images before the DR24 cut-off (MJD 60960.5); 5th percentile 83%, lowest
+  78% (field 468 i-band quadrants with ~20 images each). Raise `--n-api` to improve
+  coverage there.
+- Non-detection fraction on infobits = 0 images, median per light curve:
+  0 below 18 mag; 0.2–1.2% at 18–19; 10–25% at 19–20; 35–78% at 20–20.5;
+  64–96% at 20.5–21 (g/r/i; i worst).
+
 ## Known issues and caveats
+- **`catflags` is not derived from `infobits` alone.** COSMOS (228k epochs): 18,138
+  epochs have infobits ≠ 0 but catflags < 32768; 829 have catflags ≥ 32768 with
+  infobits = 0.
 - **The API's `ztf_dr23` collection has 0.2% more epochs than the DR23 parquet
   release**: 38 of about 19,250 in the sample, all at MJD 60248–60374 (Nov 2023–Mar
   2024) and 22 on night 60352. DR24 parquet and the `ztf_dr24` API agree exactly.

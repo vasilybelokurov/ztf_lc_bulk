@@ -52,3 +52,28 @@ def test_extract_verify_load_and_api(targets, tmp_path):
     assert df.groupby(["src_id", "band"]).size().max() == 1
     r = api_spotcheck(tmp_path, n=6, threads=3)
     assert r["pass"], r["table"]
+
+
+def test_exposures_end_to_end(targets, tmp_path):
+    """build_exposures on a small i-band run: every epoch matches an image, limitmag
+    present on all clean epochs and equal to the LC API's value per epoch."""
+    from ztf_lc_bulk import build_exposures, nondetections
+    from ztf_lc_bulk.validate import fetch_api
+    ids, ra, dec = targets
+    m = match_local(ids, ra, dec, radius_arcsec=1.0)
+    m = m.filter(m["filterid"].to_numpy() == 3)
+    save_match(m, tmp_path / "match.parquet")
+    s = run_extract(tmp_path / "match.parquet", tmp_path, workers=2, log=lambda *_: None)
+    assert s["failed"] == 0
+    b = build_exposures(tmp_path, log=lambda *_: None)
+    assert b["n_images"] > 0
+    df = load(tmp_path, long=True, catflags0=False, exposures=True)
+    assert (df["expid"] >= 0).all()
+    assert df.loc[df["catflags"] == 0, "limitmag"].notna().all()
+    for oid in df["objectid"].drop_duplicates().sample(2, random_state=0):
+        api = fetch_api(oid, collection="ztf_dr23")
+        j = df[df["objectid"] == oid].merge(api[["expid", "limitmag"]], on="expid", suffixes=("", "_api"))
+        assert len(j) == (df["objectid"] == oid).sum()
+        assert np.allclose(j["limitmag"], j["limitmag_api"], atol=1e-4)
+    nd = nondetections(tmp_path, columns=["limitmag"])
+    assert (nd["edge_dist"] >= 10).all()

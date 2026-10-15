@@ -10,7 +10,7 @@ Read its `README.md` for the full output schema and test descriptions.
 
 ## Decide the route first
 - **More than ~100 targets, or a dense field**: use this package (bulk parquet).
-- **A handful of objects, or you need sharp/chi/limitmag/airmass/DR24**: use the IRSA
+- **A handful of objects, or you need sharp/chi per epoch**: use the IRSA
   API (`nph_light_curves`, pin `COLLECTION`, at most 4–8 concurrent requests;
   ≥16 gives ~100% failures).
 - **Galaxies whose nucleus varies**: catalogue PSF light curves are unreliable. You need
@@ -28,11 +28,15 @@ ztf-lc-bulk match --input targets.csv --id name --ra ra --dec dec --out runs/NAM
 ztf-lc-bulk extract --out runs/NAME --workers 4      # add --release dr24 for DR24 (new run dir)
 ztf-lc-bulk verify  --out runs/NAME
 ztf-lc-bulk validate-api --out runs/NAME --n 20     # optional: compare with IRSA API
+ztf-lc-bulk exposures --out runs/NAME               # optional: per-image metadata (~1-2 min/field)
+#   add --whole-fields for every quadrant of the run's fields; README 'Per-exposure metadata' explains routes A/B
 ```
 ```python
 import ztf_lc_bulk as z
 df = z.load("runs/NAME", primary=True)            # one row per (src_id, band); array columns
 lc = z.load("runs/NAME", src_ids=[...], long=True) # one row per epoch
+lc = z.load("runs/NAME", long=True, exposures=True) # + expid, limitmag, maglimit, magzp, seeing, airmass, ...
+nd = z.nondetections("runs/NAME", columns=["limitmag"])  # images covering an object without a detection
 ```
 `load` defaults: catflags==0 only, min_epochs=1. Primary objectid per (src_id, band) =
 most clean epochs, then longest baseline, then smallest separation.
@@ -48,8 +52,12 @@ most clean epochs, then longest baseline, then smallest separation.
 - objectids are per band and per field/CCD/quadrant. A source typically has about 2 per
   band, with complementary epochs and field-to-field zero-point offsets of ~0.06 mag
   (median). Do not merge them silently; use `primary=True` or model the offsets.
-- The parquet has only hmjd/mag/magerr/clrcoeff/catflags. sharp, chi, limitmag and
-  airmass come only from the API.
+- The parquet has only hmjd/mag/magerr/clrcoeff/catflags. Image metadata (limitmag,
+  maglimit, magzp, seeing, airmass, expid) comes from `ztf-lc-bulk exposures` (IBE image
+  metadata + 3 API light curves per quadrant); never fetch it per object. sharp and chi
+  are per detection and come only from the API.
+- `limitmag` (light-curve/API) and `maglimit` (image header, IBE) are different: limitmag
+  is ~0.55 mag deeper (rms 0.21). Say which one you use.
 - **Download size is set by sky area, not source count**: each field × band × quadrant
   file (~0.74 deg²) must be downloaded whole. IRSA serves ~0.7–1.1 MB/s, so estimate
   time before starting large runs and tell the user.

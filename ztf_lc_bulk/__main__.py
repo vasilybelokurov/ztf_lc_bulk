@@ -7,6 +7,7 @@ ztf-lc-bulk match   --input targets.csv --id name --ra ra --dec dec --out runs/m
 ztf-lc-bulk extract --out runs/cosmos --workers 4
 ztf-lc-bulk verify  --out runs/cosmos
 ztf-lc-bulk validate-api --out runs/cosmos --n 40
+ztf-lc-bulk exposures --out runs/cosmos
 """
 
 from __future__ import annotations
@@ -70,6 +71,13 @@ def main(argv=None):
     a_.add_argument("--threads", type=int, default=4)
     a_.add_argument("--seed", type=int, default=1)
 
+    x = sub.add_parser("exposures", help="per-image metadata (IBE + LC API) -> <out>/exposures.parquet")
+    x.add_argument("--out", required=True)
+    x.add_argument("--n-api", type=int, default=3, help="API light curves per quadrant (default 3)")
+    x.add_argument("--threads", type=int, default=4)
+    x.add_argument("--whole-fields", action="store_true",
+                   help="cover every quadrant/filter of the run's fields, not only those with light curves")
+
     a = p.parse_args(argv)
     out = Path(a.out)
     match_path = (getattr(a, "match", None) or out / "match.parquet")
@@ -92,6 +100,9 @@ def main(argv=None):
     elif a.cmd == "verify":
         from .pipeline import verify
         res = verify(match_path, out)
+    elif a.cmd == "exposures":
+        from .exposures import build_exposures
+        res = build_exposures(out, n_api=a.n_api, threads=a.threads, whole_fields=a.whole_fields)
     else:
         import pandas as pd
         from .validate import api_spotcheck
