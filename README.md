@@ -7,6 +7,8 @@ It then downloads only the files that are needed, from DR23 or DR24
 (`--release dr24`), and keeps only the matched objects.
 
 - Use it for lists of more than ~100 targets.
+- Faint sources and moonlight: flag near-limit epochs and correct bright-sky light with
+  `add_brightsky_columns`; see [Moonlight and bright sky](#moonlight-and-bright-sky).
 - Per-epoch image metadata (limitmag, maglimit, zeropoint, seeing, airmass, expid) and
   per-object non-detections: `ztf-lc-bulk exposures`, then `load(..., exposures=True)`.
   See [Per-exposure metadata](#per-exposure-metadata).
@@ -260,6 +262,114 @@ summary.
 | `programid`* | B | 1 public (MSIP), 2 collaboration, 3 Caltech (Explanatory Supplement) |
 | `n_api_obj` | B | Number of API light curves containing the image; 0 = not seen by route B |
 
+## Moonlight and bright sky
+
+Moonlight biases ZTF catalog light curves, and so does any bright sky (twilight, high
+airmass, thin cloud). Sources look **brighter** when the sky is bright. For a source of
+18–19 mag the bias reaches 10–30 mmag. Near the detection limit it reaches several
+tenths of a magnitude. It also produces a spurious 29.5-day period in faint sources.
+ZTF's own quality flags do not remove it.
+
+If your sources are brighter than about 17.5 mag, you can ignore all of this: the bias
+there is a few mmag. For fainter sources, use the two steps below.
+
+### The two causes, and what to do about each
+
+1. **Detections near the limit are biased bright, and nothing can correct them.** A
+   catalog light curve contains only detections. When an image is shallow (bright sky),
+   a faint source is detected only when noise happens to push it up, so the epochs that
+   survive are too bright. Recovering the true flux of these epochs needs forced
+   photometry. **Flag them and drop them.**
+2. **Every source gains a little extra light.** On a bright-sky image, every source
+   gets about 0.8–0.9 µJy of extra flux for each doubling of the sky brightness. In r,
+   every source also loses about 0.2% of its flux per doubling. The extra light is
+   small, but on a 19th-mag source (about 90 µJy) under a full Moon it amounts to
+   2–3%. **Correct it.**
+
+### How to use it
+
+```python
+import ztf_lc_bulk as z
+
+lc = z.load("runs/NAME", long=True, exposures=True, catflags0=False)  # needs `ztf-lc-bulk exposures`
+lc = z.add_brightsky_columns(lc)
+
+good = lc[(lc.catflags == 0) & ~lc.near_limit]
+mag = good.mag_corr          # corrected magnitudes; use good.mag to skip the correction
+```
+
+`add_brightsky_columns` adds:
+
+| Column | Meaning |
+|---|---|
+| `sky_ratio` | Sky brightness of the image divided by that of a typical dark image of the same CCD quadrant and filter. 1 = dark; about 10 under a full Moon. |
+| `mag_ref` | The light curve's normal magnitude: the median over dark-sky nights (`sky_ratio` < 1.5, at least 5 nights) of clean, not-near-limit epochs. |
+| `limit_margin` | `maglimit` of the image minus `mag_ref`: how far the source sits above that image's 5σ limit. |
+| `near_limit` | `True` when `limit_margin` < 1.3 mag, or when the light curve has no `mag_ref`. Drop these epochs. |
+| `mag_corr` | Magnitude with the extra light removed: F′ = (F − k log₂R) / (1 + s log₂R) for R > 1, with k = 0.80 µJy (g), 0.89 µJy (r) and s = 0 (g), −0.0021 (r). Equal to `mag` in i band and on dark images. `magerr` is unchanged. |
+
+The flag uses the source's normal magnitude, not the epoch's magnitude: an epoch is
+judged by whether the image was deep enough for this source, not by how bright the
+source happened to look. A 19.5-mag source is safe on a deep dark image and unsafe on a
+shallow moonlit one.
+
+### What it costs
+
+The flag removes epochs of faint sources. Fraction of clean epochs **kept** (COSMOS and
+Coma, DR24):
+
+| Normal mag | 16–17 | 17–18 | 18–19 | 19–19.5 | 19.5–20 | > 20 |
+|---|---|---|---|---|---|---|
+| g | 100% | 96–98% | 72–78% | 40–49% | 11–15%* | ~0 |
+| r | 100% | 96–98% | 66–70% | 26–30% | 5–10%* | ~0 |
+
+\* from the project's validation pipeline (twilight excluded); other columns from the
+shipped code.
+
+Light curves of sources fainter than about 19.5 mag lose most of their epochs. For
+those sources, catalog photometry under bright skies cannot be rescued; use forced
+photometry (ZFPS).
+
+`add_brightsky_columns(lc, margin=1.0)` keeps more data (58–68% at 19–19.5 mag)
+but leaves biases of up to ~20 mmag and part of the 29.5-day signal at 19–19.5 mag.
+
+### What it achieves
+
+![Bias before and after](docs/brightsky_validation.png)
+
+Tested on two fields (COSMOS at Dec +2°; a field near Coma at Dec +30°), g and r. The
+correction coefficients were fitted on one field and tested on the other.
+
+- **Bias versus sky brightness** (clean epochs, relative to dark images). Over 17–19 mag,
+  the worst raw offset under bright skies is 4–23 mmag; after the flag and correction it
+  is at most 6 mmag. At 19–19.5 mag, raw offsets of 42–96 mmag drop to ≤ 5 mmag (one sparse
+  Coma g bin: 12 mmag).
+- **The 29.5-day signal in faint sources** (19–20.5 mag). Lomb–Scargle power at the
+  lunar period, relative to neighbouring periods (22–38 d), falls from 3–13× to
+  0.7–1.0×: no lunar signal remains. (In COSMOS r the raw ratio is only 0.9: the bad
+  night MJD 60317, with 296,000 epochs of these sources, dominates the periodograms.
+  Without that night the raw ratio is 1.7. See Limits.)
+- **Completeness.** At `limit_margin` ≥ 1.3 mag, clean-detection completeness is within
+  1% of its bright-source value in every sky-brightness class, in both fields and
+  bands ([calibration](docs/flag_calibration.png)).
+
+### Limits
+
+- Validated on two fields, DR24, g and r. The i band gets the flag but no correction.
+- `sky_ratio` uses the 25th percentile of each quadrant's images in the run as "typical
+  dark"; runs with few images per quadrant (fewer than ~20) make it noisier.
+- Light curves with fewer than 5 dark-sky nights get no `mag_ref`, so all their epochs
+  are flagged.
+- For variables with large amplitudes, `mag_ref` is a median; in faint phases the flag
+  is too lenient.
+- Bad nights are a separate problem. In COSMOS, night MJD 60317 is a high-cadence
+  sequence with a coherent offset that ZTF did not flag; this method does not catch it.
+- The extra-light term grows roughly with the logarithm of the sky brightness, not in
+  proportion to it. Its physical cause is not established; the correction is empirical.
+
+Derivation, tests and figures: the `ztf_moon_systematics` project (scripts
+`flag_calibration.py`, `validate_flags.py`, `validate_package.py`).
+
 ## Output layout (`--out` run directory)
 
 | Path | Content |
@@ -324,7 +434,7 @@ Each line records: `fileid`, `filename`, `status` (`ok` or `failed`), `n_request
 ## Tests
 
 ```bash
-python -m pytest -q                 # offline: 28 tests, no network
+python -m pytest -q                 # offline: 36 tests, no network
 python -m pytest -m network -v      # WSDB + IRSA: 3 tests, ~50 s, downloads ~6 MB
 ```
 
@@ -360,6 +470,14 @@ python -m pytest -m network -v      # WSDB + IRSA: 3 tests, ~50 s, downloads ~6 
 | | `load_unmatched_epoch_gets_minus_one` | An epoch 0.5 d from any image gets expid −1 and NaN |
 | | `nondetections` | Undetected images found; images not in the release excluded; edge margin applied |
 | | `unit_vector_norm` | Unit vectors |
+| `test_brightsky.py` | `sky_ratio_per_quadrant` | R = sky / 25th percentile, separately per quadrant |
+| | `sky_ratio_ignores_flagged_images_and_fills_magzp` | Flagged images excluded from the dark level; missing magzp filled with the quadrant median |
+| | `reference_mag_dark_clean_nights_only` | Only clean, dark-sky nights; at least 5 nights |
+| | `reference_mag_iterates_away_from_near_limit` | Near-limit (bright-biased) epochs dropped from the reference |
+| | `near_limit_flag` | Threshold at 1.3 mag; light curves without a reference are flagged |
+| | `correction_round_trip_and_scope` | Exactly undoes an injected additive + scale term; R ≤ 1 and i band untouched |
+| | `correction_nan_when_flux_not_positive` | Non-positive corrected flux gives NaN |
+| | `read_exposures_adds_sky_ratio` | `read_exposures` computes `sky_ratio` for older exposure tables |
 | | `build_exposures_whole_fields` | With IRSA/WSDB stubbed: default scope = run quadrants only; `whole_fields` = every quadrant of the fields, and the API is asked about each |
 
 **`verify` checks** (run on every real extraction): every matched objectid is present

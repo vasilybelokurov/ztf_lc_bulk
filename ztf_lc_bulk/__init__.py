@@ -11,7 +11,7 @@ Pipeline
 3. ``verify``  : completeness and consistency checks on the output.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 IRSA_BASE_URL = "https://irsa.ipac.caltech.edu/data/ZTF/lc/"
 INDEX_OBJS = "koposov.ztf_23_objs"
@@ -23,7 +23,9 @@ from .match import match_local, match_wsdb_table, run_match, save_match, summari
 from .pipeline import run_extract, verify  # noqa: E402
 from .load import load, select_primary, filter_epochs  # noqa: E402
 from .exposures import build_exposures, read_exposures, nondetections  # noqa: E402
+from .brightsky import add_brightsky_columns, reference_mag, sky_ratio  # noqa: E402
 
 __all__ = ["match_local", "match_wsdb_table", "run_match", "save_match", "summarize_match",
            "run_extract", "verify", "load", "select_primary", "filter_epochs",
-           "build_exposures", "read_exposures", "nondetections"]
+           "build_exposures", "read_exposures", "nondetections",
+           "add_brightsky_columns", "reference_mag", "sky_ratio"]

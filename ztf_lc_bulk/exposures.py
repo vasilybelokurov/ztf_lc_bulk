@@ -46,7 +46,7 @@ IBE_COLS = ["field", "ccdid", "qid", "rcid", "fid", "filtercode", "expid", "pid"
 API_COLS = ["limitmag", "magzp", "magzprms", "clrcounc", "programid"]
 KEY = ["field", "rcid", "fid"]
 EXPOSURE_COLS = ["expid", "mjd_mid", "exptime", "maglimit", "limitmag", "magzp", "magzprms",
-                 "seeing", "airmass", "moonillf", "infobits", "programid"]
+                 "seeing", "airmass", "moonillf", "infobits", "programid", "sky_ratio"]
 TOL_S = 5.0          # observed max |hmjd - prediction| is 0.44 s; images are >= 39.6 s apart
 QUAD_RADIUS = 0.65   # deg; half-diagonal of a CCD quadrant is ~0.61 deg
 
@@ -196,7 +196,11 @@ def read_exposures(run_dir) -> pd.DataFrame:
     p = Path(run_dir) / "exposures.parquet"
     if not p.exists():
         raise FileNotFoundError(f"{p} not found; run `ztf-lc-bulk exposures --out {run_dir}` first")
-    return pd.read_parquet(p)
+    exp = pd.read_parquet(p)
+    if "sky_ratio" not in exp:
+        from .brightsky import sky_ratio
+        exp["sky_ratio"] = sky_ratio(exp)
+    return exp
 
 
 def match_epochs(exp: pd.DataFrame, field, rcid, fid, ra, dec, hmjd,

@@ -56,6 +56,11 @@ most clean epochs, then longest baseline, then smallest separation.
   maglimit, magzp, seeing, airmass, expid) comes from `ztf-lc-bulk exposures` (IBE image
   metadata + 3 API light curves per quadrant); never fetch it per object. sharp and chi
   are per detection and come only from the API.
+- **Faint sources (fainter than ~17.5 mag) and moonlight:** catalog magnitudes are biased
+  bright on bright-sky images. Use `lc = z.add_brightsky_columns(z.load(run, long=True,
+  exposures=True, catflags0=False))`, keep `catflags == 0 & ~near_limit`, use `mag_corr`.
+  Expect to lose most epochs of sources fainter than ~19.5 mag; tell the user. README
+  section "Moonlight and bright sky".
 - `limitmag` (light-curve/API) and `maglimit` (image header, IBE) are different: limitmag
   is ~0.55 mag deeper (rms 0.21). Say which one you use.
 - **Download size is set by sky area, not source count**: each field × band × quadrant
