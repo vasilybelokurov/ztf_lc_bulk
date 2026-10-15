@@ -367,8 +367,9 @@ correction coefficients were fitted on one field and tested on the other.
 - The extra-light term grows roughly with the logarithm of the sky brightness, not in
   proportion to it. Its physical cause is not established; the correction is empirical.
 
-Derivation, tests and figures: the `ztf_moon_systematics` project (scripts
-`flag_calibration.py`, `validate_flags.py`, `validate_package.py`).
+Derivation, tests and figures: [ztf_moon_systematics](https://github.com/vasilybelokurov/ztf_moon_systematics)
+(study: `docs/moon_study.md`; scripts `flag_calibration.py`, `validate_flags.py`,
+`validate_package.py`, `moon_study.py`).
 
 ## Output layout (`--out` run directory)
 
