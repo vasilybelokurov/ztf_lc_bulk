@@ -49,9 +49,15 @@ most clean epochs, then longest baseline, then smallest separation.
   variability of known objects; for completeness-sensitive work tell the user, and see the
   README section "Can the DR23 index be relied on for DR24?".
 - `hmjd` is heliocentric MJD, rounded to 1e-5 d (0.86 s).
-- objectids are per band and per field/CCD/quadrant. A source typically has about 2 per
-  band, with complementary epochs and field-to-field zero-point offsets of ~0.06 mag
-  (median). Do not merge them silently; use `primary=True` or model the offsets.
+- objectids are per band and per field/CCD/quadrant. A source often has 2 or more per
+  band (SDSS QSOs: 69–73% of source–band pairs within 1″), from overlapping fields, with
+  complementary epochs. Field-to-field zero-point offset: median −0.002 mag, scatter
+  0.017 mag (r < 19) to 0.11 mag (r > 21). Do not merge them silently; use
+  `primary=True` (merging adds a median of only 2–4% more nights) or fit the offsets.
+- Match radius: 1″ (99.5–99.9% complete for SDSS QSOs, ≤ 0.5% chance pairs). Use 1.25″
+  for sources fainter than r ≈ 21.5. g and r objectids of one source differ by
+  0.1–0.6″ (centroid noise); this does not affect the light curves. Evidence: README
+  "Crossmatching QSO catalogues".
 - The parquet has only hmjd/mag/magerr/clrcoeff/catflags. Image metadata (limitmag,
   maglimit, magzp, seeing, airmass, expid) comes from `ztf-lc-bulk exposures` (IBE image
   metadata + 3 API light curves per quadrant); never fetch it per object. sharp and chi

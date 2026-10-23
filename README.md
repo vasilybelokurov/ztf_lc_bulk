@@ -14,6 +14,9 @@ It then downloads only the files that are needed, from DR23 or DR24
   See [Per-exposure metadata](#per-exposure-metadata).
 - For a handful of objects, or when you need sharp/chi per epoch, use the IRSA
   light-curve API instead.
+- Crossmatch radius and multiple objectids per source (SDSS and DESI QSOs): use 1″
+  (1.25″ for r > 21.5) and `primary=True`; see
+  [Crossmatching QSO catalogues](#crossmatching-qso-catalogues-radius-gr-offsets-extra-objectids).
 - **DR24 limitation:** objects are located through the DR23 index, so DR24 output
   holds the full DR24 light curves of objects that already existed in DR23. Objects
   new in DR24 are silently absent. In COSMOS they are 0.9–7.1% of the objects per
@@ -91,7 +94,10 @@ nd = z.nondetections("runs/x", columns=["limitmag", "mjd_mid"])  # images withou
 - `primary` keeps one objectid per (src_id, band). The ranking is: most epochs after
   cuts, then longest baseline, then smallest separation, then smallest objectid. This
   follows `ztf_qso_parquet/select_primary_lightcurves.py`.
-- Without `primary`, every objectid within the radius is kept.
+- Without `primary`, every objectid within the radius is kept. For SDSS/DESI QSOs,
+  69–73% / 53–59% of source–band pairs have more than one objectid within 1″, nearly
+  all from overlapping fields. Why keeping the longest is the right default is shown in
+  [Q3](#q3-the-extra-objectids-inside-1).
 - `exposures` adds the image columns below to every epoch (needs `exposures.parquet`).
 
 ## Per-exposure metadata
@@ -370,6 +376,184 @@ correction coefficients were fitted on one field and tested on the other.
 Derivation, tests and figures: [ztf_moon_systematics](https://github.com/vasilybelokurov/ztf_moon_systematics)
 (the full study is its README; scripts `flag_calibration.py`, `validate_flags.py`,
 `validate_package.py`, `moon_study.py`).
+
+## Crossmatching QSO catalogues: radius, g/r offsets, extra objectids
+
+Measured on 2026-10-23 for **SDSS DR16Q** (749,329 QSOs) and **DESI DR1** (1,636,845
+QSOs: `spectype = 'QSO'`, `zwarn = 0`, `zcat_primary`, after removing duplicates), using
+every ZTF DR23 objectid within 5″ in the index. Scripts and run order:
+[`studies/qso_crossmatch/`](studies/qso_crossmatch/).
+
+**Summary**
+- **Use a 1″ radius.** It contains 99.5% (g) / 99.9% (r) of the genuine matches of
+  SDSS QSOs and 98.3% / 99.2% for DESI QSOs; at most 0.16% (SDSS) and 0.5% (DESI) of
+  the matched pairs are chance neighbours. For QSOs fainter than r ≈ 21.5 (mostly DESI)
+  use 1.25″: 1″ holds only 95–98% of their matches.
+- **g and r objectids 0.1–0.6″ apart are normal** and do not change the light curves.
+  Each is a centroid from a different reference image; the offset is centroid noise.
+- **Extra objectids inside 1″ are the same QSO in an overlapping field** (> 99.98% of
+  them). Keep the one with the most epochs (`primary=True`). Merging them adds a
+  median of 2–4% more nights.
+
+### How ZTF objectids are made (why there are several per QSO)
+Light curves are built by matching single-exposure PSF-fit detections to "seed" sources
+from the deeper reference-image (co-add) catalogue. That is done separately for each
+field, CCD quadrant and filter, and `objra`/`objdec` are the seed position "from the
+input Reference Image (seed) catalog corresponding to the fieldid, rcid, and filterid"
+([DR23 release notes](https://irsa.ipac.caltech.edu/data/ZTF/docs/releases/dr23/ztf_release_notes_dr23.pdf),
+Sections 3 and 12c). ZTF also tiles the sky with two overlapping grids (primary and
+secondary). So one QSO has
+- a different objectid in each band, at a slightly different position (Q2 below), and
+- a further objectid in each band for every other field that covers it (Q3 below).
+
+### Method
+- `pull.py`: for every QSO, all ZTF objectids within 5″ (`q3c_join` against
+  `koposov.ztf_23_objs`, probes sorted by `q3c_ang2ipix`), plus the same list shifted
+  by +60″ in Dec as a "random sky" control. SDSS positions are the DR16Q (SDSS
+  imaging) positions; DESI positions and magnitudes come from `desi_dr1.photometry`
+  (Legacy Surveys). In the magnitude bins below, "r" is SDSS PSF r for SDSS QSOs and
+  Legacy Surveys r (22.5 − 2.5 log₁₀ flux_r) for DESI QSOs.
+- The density of ZTF objectids around a QSO is a narrow core (the QSO itself) on top
+  of a background. **Near a real source the background is not the sky value:** ZTF
+  cannot resolve a second source within about one PSF width, so between 1.2″ and
+  about 4″ the density is only 0.2–0.5× (SDSS) and 0.55–0.87× (DESI) of the density 60″
+  away (left panel). The shifted control therefore overestimates chance matches near
+  the QSO by up to 5×. The estimators used here are:
+  - background = density of the real profile at 1.5–2.5″, assumed constant inward.
+    The exclusion is stronger closer in, so contamination is an **upper limit**;
+  - completeness C(R) = (pairs inside R − background × πR²) / (the same at 2″).
+- Light-curve tests use DR23 light curves of all objectids within 1″ of the DR16Q QSOs
+  (`$ZTF_QSO_LC_DIR`) and only catflags == 0 epochs.
+
+### Q1: which radius?
+
+![Density profile, completeness and contamination](docs/qso_xm_aperture.png)
+
+| Radius | SDSS g | SDSS r | DESI g | DESI r | Chance pairs (upper limit), SDSS / DESI |
+|---|---|---|---|---|---|
+| 0.5″ | 94.5% | 97.4% | 87.9% | 92.4% | 0.04% / 0.15% |
+| 0.75″ | 98.4% | 99.4% | 95.5% | 97.5% | 0.09% / 0.32% |
+| **1.0″** | **99.5%** | **99.9%** | **98.3%** | **99.2%** | **0.16% / 0.54%** |
+| 1.25″ | 99.8% | 100% | 99.4% | 99.8% | 0.25% / 0.84% |
+| 1.5″ | 100% | 100% | 99.9% | 100% | 0.36% / 1.2% |
+| 2.0″ | 100% | 100% | 100% | 100% | 0.64% / 2.1% |
+
+The band columns give completeness: the percentage of genuine matches inside the
+radius. The last column is the fraction of matched pairs that are chance neighbours;
+it is quoted for the worse band (g).
+
+The radius grows with magnitude because ZTF centroids get noisier. Radius that holds
+99% of the genuine matches:
+
+| r (mag) | < 19 | 19–20 | 20–20.5 | 20.5–21 | 21–21.5 | > 21.5 |
+|---|---|---|---|---|---|---|
+| SDSS, g / r | 0.30″ / 0.25″ | 0.35″ / 0.30″ | 0.50″ / 0.35″ | 0.70″ / 0.50″ | 0.95″ / 0.70″ | 1.20″ / 1.00″ |
+| DESI, g / r | 0.35″ / 0.25″ | 0.60″ / 0.30″ | 0.60″ / 0.35″ | 0.70″ / 0.45″ | 1.00″ / 0.65″ | 1.40″ / 1.25″ |
+
+![Completeness vs QSO magnitude, g band](docs/qso_xm_aperture_vs_mag.png)
+
+At 1″ completeness is ≥ 99.8% at r < 21 in both catalogues and both bands. For
+r > 21.5 it is 97.8% (SDSS g), 95.0% (DESI g) and 97.6% (DESI r). There the radius can
+go to 1.25–1.5″ at a cost of ≤ 1.1% chance pairs.
+
+Not every QSO has a ZTF counterpart. Within 1″: SDSS 94% (g) / 96% (r), DESI 76% / 84%.
+The rest are too faint for the ZTF reference images, or lie outside DR23 (Dec < −30°).
+
+### Q2: g and r objectids are a fraction of an arcsecond apart
+
+![g vs r objectid positions](docs/qso_xm_g_vs_r.png)
+
+- **Size.** For the longest g and r objectids within 1″: SDSS median 0.13″, 90% < 0.41″,
+  99% < 0.86″; DESI median 0.18″, 90% < 0.59″, 99% < 1.09″ (same field).
+- **Cause: centroid noise of the two reference images.** The objectid positions were
+  checked against Gaia DR3 (3,136 SDSS QSOs with r < 20.5 in ra 180–190°, dec 10–30°;
+  `gaia_check.py`):
+
+  | r (mag) | N | σ(g objectid − Gaia) | σ(r objectid − Gaia) | σ(g − r) |
+  |---|---|---|---|---|
+  | < 19.5 | 1775 | 0.044″ | 0.030″ | 0.043″ |
+  | 19.5–20 | 560 | 0.056″ | 0.042″ | 0.060″ |
+  | 20–20.5 | 801 | 0.070″ | 0.054″ | 0.080″ |
+
+  All σ are per axis. σ(g − r) rises to 0.13″ at r = 20.5–21 and 0.22″ at r > 21. The g
+  and r errors are partly shared (correlation 0.45–0.78 against Gaia). This is
+  consistent with both reference images of a field being tied to Gaia by the same kind
+  of solution, so σ(g − r) is smaller than √(σ_g² + σ_r²). (SDSS DR16Q positions differ
+  from Gaia by 0.047″ per axis.)
+- **Effect on the light curves: none of practical size.** The magnitude of each epoch
+  comes from that epoch's own detection; the seed position only decides which
+  detections belong to the objectid. 36,623 SDSS QSOs with ≥ 30 epochs in g and r in
+  the same field were tested. Each QSO was compared with QSOs of the same magnitude
+  (0.1-mag bins), to remove the trend that fainter QSOs have both larger separations
+  and noisier light curves. Two quantities were checked: the correlation of g and r
+  variations on the same night, and the mean colour (ZTF g − r minus SDSS g − r).
+
+  | g − r separation | N | Δ correlation | Δ colour (mag) |
+  |---|---|---|---|
+  | 0–0.1″ | 15726 | +0.009 ± 0.002 | −0.001 ± 0.001 |
+  | 0.1–0.2″ | 11491 | 0.000 ± 0.002 | +0.002 ± 0.001 |
+  | 0.2–0.3″ | 4829 | −0.018 ± 0.003 | +0.002 ± 0.002 |
+  | 0.3–0.5″ | 3192 | −0.014 ± 0.004 | 0.000 ± 0.004 |
+  | 0.5–0.75″ | 826 | −0.028 ± 0.009 | −0.009 ± 0.007 |
+  | 0.75–1.0″ | 165 | −0.044 ± 0.023 | −0.025 ± 0.018 |
+
+  The typical same-night g–r correlation is 0.3–0.75, depending on magnitude; the
+  changes are ≤ 0.04 of that. The colour is unchanged to < 0.01 mag up to 0.75″. The
+  small loss of correlation at large separation may be residual magnitude dependence
+  (those QSOs are the faintest in their 0.1-mag bin) or the occasional blend.
+
+### Q3: the extra objectids inside 1″
+
+![Extra objectids](docs/qso_xm_extra_objectids.png)
+
+| | SDSS DR16Q | DESI DR1 |
+|---|---|---|
+| QSO–band pairs with ≥ 2 objectids within 1″ (g / r) | 69% / 73% | 53% / 59% |
+| Extra objectids from another field | 1,211,833 | 1,681,956 |
+| Same field and quadrant (duplicate entries) | 49 | 156 |
+| Same field, other quadrant | 10 | 21 |
+| Epochs of an extra / epochs of the longest (median) | 0.08 | 0.10 |
+| Nearest objectid is not the longest | 40% | 30% |
+| … and then the nearest has (median) | 8% of the epochs | 9% of the epochs |
+
+- **They are the same QSO.** In both catalogues more than 99.98% are the QSO in an
+  overlapping field, and chance neighbours are ≤ 0.5% of pairs (Q1). In r for 30,000
+  SDSS QSOs, an other-field objectid shares no epochs with the longest one (median 0
+  shared). Its magnitude on the same nights agrees: median offset −0.002 mag; scatter
+  0.017 mag at r < 19, 0.032 at 19–20, 0.053 at 20–20.5, 0.079 at 20.5–21, 0.11 at r > 21.
+- **Same-quadrant duplicates** (rare) have about 96% identical epochs with identical
+  magnitudes: the same detections assigned to two seeds 1.4–2″ apart, with the QSO
+  between them.
+- **Why the longest and not the nearest.** The objectid nearest to the QSO is chosen
+  by noise: separations are 0.1–0.2″ either way, within the centroid errors of Q2. When
+  it is not the longest (30–40% of cases), it is usually a short light curve from a
+  secondary field, with 8–9% of the epochs. Ranking by number of epochs picks the field
+  where the QSO is observed most, with no extra cost.
+- **What merging all objectids would add** (40,000 random SDSS QSOs per band, union of
+  clean epochs):
+
+  | | g | r |
+  |---|---|---|
+  | Extra epochs, median / mean | +4.7% / +17% | +5.7% / +18% |
+  | Extra distinct nights, median / mean | +2.4% / +8.9% | +3.5% / +9.9% |
+  | QSOs gaining > 25% nights | 12.7% | 13.5% |
+  | QSOs whose baseline grows by > 30 d | 4.7% | 6.2% |
+
+  Most extra epochs fall on nights the longest light curve already covers. Merging
+  also needs a zero-point offset per field (above). So `primary=True` loses about 7–8%
+  of all nights in the sample and avoids that calibration. Merge only for work limited
+  by cadence (lags, periodicity), and fit the field offsets as free parameters.
+- How many QSOs have extra objectids depends on the sky (field overlaps). In the
+  COSMOS2020 run, 22% of source–band pairs had a second field; near Coma, 99%.
+
+### Problems found in the input catalogues
+- **DESI DR1: 8,997 duplicate entries.** The same QSO appears under two `targetid`s,
+  both with `zcat_primary`. Of the DESI entries sharing a ZTF objectid within 1″,
+  96.6% are at the same position to 0.000″ and 98.8% have |Δz| < 0.01. `desi_dedup.py`
+  keeps the lower `targetid`. Without this, 1.3% of DESI QSOs would be counted twice.
+- **DESI positions:** use the Legacy Surveys position (`desi_dr1.photometry.ra/dec`).
+  The RA/Dec in a private DESI QSO table used during this work differed from it by a
+  median 0.06″ (99th percentile 0.29″), enough to bias a sub-arcsecond study.
 
 ## Output layout (`--out` run directory)
 
@@ -686,8 +870,10 @@ Run `runs/cosmos_dr24` (36 quadrants, 185,079 light curves).
   does not use the duckdb driver. If you query the files yourself with it, use
   sqlutilpy ≥ 0.28.
 - **objectids are per band and field.** Several per source are normal, with
-  complementary epochs and zero-point offsets between fields (median ~0.06 mag). Use
-  `primary=True` or model the offsets; do not concatenate them blindly.
+  complementary epochs and a zero-point offset between fields. For SDSS QSOs the median
+  offset is −0.002 mag, and the scatter between QSOs grows from 0.017 mag (r < 19) to
+  0.11 mag (r > 21). Use `primary=True`, or fit the offsets; do not concatenate them
+  blindly. See [Q3](#q3-the-extra-objectids-inside-1).
 
 ## Claude Code
 `.claude/skills/ztf-lc/SKILL.md` tells Claude when and how to use this package instead of
