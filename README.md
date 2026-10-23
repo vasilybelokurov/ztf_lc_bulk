@@ -23,6 +23,47 @@ It then downloads only the files that are needed, from DR23 or DR24
   file; all have ≤ 5 epochs and they are faint. See
   [Can the DR23 index be relied on for DR24?](#can-the-dr23-index-be-relied-on-for-dr24).
 
+## Contents
+- [Install](#install)
+- [Usage](#usage)
+  - [Command line](#command-line)
+  - [Python](#python)
+- [Per-exposure metadata](#per-exposure-metadata)
+  - [Why](#why)
+  - [Key idea: image properties are shared](#key-idea-image-properties-are-shared)
+  - [Where the numbers come from (two IRSA services)](#where-the-numbers-come-from-two-irsa-services)
+  - [Scope: which quadrants](#scope-which-quadrants)
+  - [Matching epochs to images](#matching-epochs-to-images)
+  - [Non-detections](#non-detections)
+  - [limitmag vs maglimit](#limitmag-vs-maglimit)
+  - [Usage](#usage-1)
+  - [exposures.parquet columns](#exposuresparquet-columns)
+- [Moonlight and bright sky](#moonlight-and-bright-sky)
+  - [The two causes, and what to do about each](#the-two-causes-and-what-to-do-about-each)
+  - [How to use it](#how-to-use-it)
+  - [What it costs](#what-it-costs)
+  - [What it achieves](#what-it-achieves)
+  - [Limits](#limits)
+- [Crossmatching QSO catalogues: radius, g/r offsets, extra objectids](#crossmatching-qso-catalogues-radius-gr-offsets-extra-objectids)
+  - [How ZTF objectids are made (why there are several per QSO)](#how-ztf-objectids-are-made-why-there-are-several-per-qso)
+  - [Method](#method)
+  - [Q1: which radius?](#q1-which-radius)
+  - [Q2: g and r objectids are a fraction of an arcsecond apart](#q2-g-and-r-objectids-are-a-fraction-of-an-arcsecond-apart)
+  - [Q3: the extra objectids inside 1″](#q3-the-extra-objectids-inside-1)
+  - [Problems found in the input catalogues](#problems-found-in-the-input-catalogues)
+- [Output layout (--out run directory)](#output-layout---out-run-directory)
+  - [match.parquet](#matchparquet)
+  - [lc/*.parquet (and load() output)](#lcparquet-and-load-output)
+  - [manifest.jsonl](#manifestjsonl)
+- [How it works](#how-it-works)
+- [Tests](#tests)
+- [Validation run: COSMOS2020 Classic (2026-10-14)](#validation-run-cosmos2020-classic-2026-10-14)
+- [DR24: COSMOS2020 Classic (2026-10-14)](#dr24-cosmos2020-classic-2026-10-14)
+  - [Can the DR23 index be relied on for DR24?](#can-the-dr23-index-be-relied-on-for-dr24)
+- [Exposure metadata: COSMOS DR24 (2026-10-15)](#exposure-metadata-cosmos-dr24-2026-10-15)
+- [Known issues and caveats](#known-issues-and-caveats)
+- [Claude Code](#claude-code)
+
 ## Install
 
 Requirements:
